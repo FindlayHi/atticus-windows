@@ -19,6 +19,11 @@ class JavaScriptTests(unittest.TestCase):
                     p = subprocess.run(['node', '--check', '--input-type=module'], input=code, capture_output=True, text=True)
                     self.assertEqual(p.returncode, 0, p.stderr)
 
+    def test_page_script_parses(self):   # ui/web.js runs in the user's browser tab through --web
+        root = Path(__file__).resolve().parents[1]
+        p = subprocess.run(['node', '--check', str(root / 'ui' / 'web.js')], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

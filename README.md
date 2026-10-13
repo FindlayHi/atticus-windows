@@ -37,6 +37,7 @@
 | *"Reply: sounds good, see you at 7."* | Types it into the app you're in. It never sends. |
 | *"Message Sam on Discord: running 10 minutes late."* | Opens the chat and types it. You Allow the send. |
 | *"In Spotify, turn on shuffle."* | Finds the button and presses it. Your mouse stays put. |
+| *"Fill in this form with my name and pick Blue."* | Reads the page in Chrome or Edge and fills it in. A click on Send or Buy asks first. |
 | *"What should I keep watching?"* | Checks Jellyfin and picks up where you left off. |
 | *"Is there motion in the office?"* | Asks Home Assistant. |
 | *"When I say focus mode, close Slack and open my to-do list."* | Remembers it. Next time, two words do it all. |
@@ -110,6 +111,12 @@ A service is only mentioned to the AI when your ask is about it, so each one cos
 
 **Or write one.** A Python file in your integrations folder (linked from Settings) loads next to the built-in ones and survives updates. Copy the shape of any file in `integrations/`. Good ones belong in a pull request.
 
+## Web pages
+
+In Chrome or Edge, Atticus reads the page you're on as text with numbered buttons, links and boxes, then clicks or fills them by number (`atticus --web read`, `click 3`, `fill 2 "Sam"`, `wait`). It goes through the browser's DevTools connection, not the mouse, so your cursor and focus stay put, and the numbers stay pinned to the same tab and the same controls through the whole ask. In safe mode, a click on anything that sends, buys, deletes, submits or confirms shows an Allow card first; from a saved shortcut it never clicks those at all.
+
+Setting it up, once per browser: Settings → Screen & Windows → Set up web pages → Chrome or Edge. That opens the browser's own `chrome://inspect/#remote-debugging` (or `edge://…`) page; turn on **Allow remote debugging for this browser instance** (Chrome 144 or later). Your browser isn't restarted and keeps your profile and sign-ins. The first time Atticus reads a page, the browser asks you to Allow it and shows a "being controlled" bar; Atticus keeps that one connection for 10 idle minutes, so you click Allow once per stretch of use. The switch lets any program on your PC ask for the same access, so turn it off in the same place if you stop using this. A browser you start yourself with `--remote-debugging-port=<port>` (on its own profile) works too: put that port in `settings.json` as `"webPort"`. Firefox isn't supported; Atticus uses the screen there.
+
 ## Watch for me
 
 Say "tell me when the download is done" or "watch this page until it says shipped". Atticus sets it up once, then checks every 5 seconds on your PC with no AI, so waiting is free. It reads the window with Windows' own text recognition, so the window must stay open (covered is fine, minimized is not). When it fires you get a notification, and it runs a follow-up if you asked for one. Coding agents like Codex are watched through their own log, with no screen at all. Say "stop watching" to cancel.
@@ -139,6 +146,7 @@ This version sends nothing. The daily anonymous user count and the opt-in failur
 - `winctl.py`: Windows' hands (displays, windows, apps, clipboard and typing, screenshots, files, UI Automation)
 - `integrations/`: one file per service, plus `_custom.py` for the ones you add in Settings
 - `ui/ui.html`, `ui/onboarding.html`, `ui/settings.html`: the overlay, the welcome flow, and Settings
+- `ui/web.js`: the script `atticus --web` runs inside the browser tab (from the Mac version)
 - `ui/orbs.js`: the [thinking-orbs](https://github.com/Jakubantalik/thinking-orbs) engine (MIT, Jakub Antalik)
 
 ## License
@@ -156,7 +164,7 @@ Fixes to the brain or the pages that aren't Windows-specific are worth sending u
 Merged from atticus-mac up to `eba8597` (2026-10-13). These Mac features weren't ported; their files are left out of this fork so a merge never ships them half-working:
 
 - Meeting Copilot (call audio needs WASAPI loopback instead of ScreenCaptureKit)
-- Background work with a live mini screen, and Chrome page reading and clicking (`ui/web.js`)
+- Background work with a live mini screen (page reading and clicking in Chrome and Edge is ported, see Web pages)
 - Native "hands" (clicks, typing, scrolling through Accessibility); `atticus --ui` covers part of it with UI Automation
 - Selected-text rewrite, and drafts inserted at the cursor
 - Contacts lookup, the Report feedback window, and the Apple speech model picker
