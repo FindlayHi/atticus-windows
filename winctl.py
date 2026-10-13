@@ -481,6 +481,70 @@ def capture(mon, path, width=1280):
     return path
 
 
+def cloud(path):
+    """True for a OneDrive-style placeholder or an offline file: reading it would download it, so no preview."""
+    a = kernel32.GetFileAttributesW(str(path))
+    return a != 0xFFFFFFFF and bool(a & 0x441000)   # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [('a', ctypes.c_uint32), ('b', ctypes.c_uint16), ('c', ctypes.c_uint16), ('d', ctypes.c_ubyte * 8)]
+
+
+class _BMI(ctypes.Structure):   # BITMAPINFOHEADER
+    _fields_ = [('size', ctypes.c_uint32), ('w', ctypes.c_int32), ('h', ctypes.c_int32), ('planes', ctypes.c_uint16), ('bits', ctypes.c_uint16),
+                ('comp', ctypes.c_uint32), ('img', ctypes.c_uint32), ('xpm', ctypes.c_int32), ('ypm', ctypes.c_int32), ('used', ctypes.c_uint32), ('imp', ctypes.c_uint32)]
+
+
+def thumb(path, size=320):
+    """The shell's own preview (photos, videos, PDFs, Office files: what Explorer shows) as PNG bytes, b'' if the type has none.
+    IShellItemImageFactory through ctypes. Run it in its own process (`python winctl.py --thumb <path>`): a slow or stuck
+    preview handler can then be killed."""
+    import io
+    from PIL import Image
+    if cloud(path):
+        return b''
+    ole32, shell32, gdi32 = ctypes.WinDLL('ole32'), ctypes.WinDLL('shell32'), ctypes.WinDLL('gdi32')
+    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi32.CreateCompatibleDC.argtypes = gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+    gdi32.GetObjectW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi32.GetDIBits.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    ole32.CoInitializeEx(None, 2)
+    iid = _GUID(0xbcc18b79, 0xba16, 0x442f, (ctypes.c_ubyte * 8)(0x80, 0xc4, 0x8a, 0x59, 0xc3, 0x0c, 0x46, 0x3b))   # IShellItemImageFactory
+    f = ctypes.c_void_p()
+    shell32.SHCreateItemFromParsingName.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    if shell32.SHCreateItemFromParsingName(os.path.abspath(path), None, ctypes.byref(iid), ctypes.byref(f)) or not f:
+        return b''
+    vt = ctypes.cast(ctypes.cast(f, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vt[2])
+    get = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, W.SIZE, ctypes.c_int, ctypes.POINTER(W.HBITMAP))(vt[3])
+    bmp = W.HBITMAP()
+    try:
+        if get(f, W.SIZE(size, size), 0x8, ctypes.byref(bmp)) or not bmp:   # 0x8 THUMBNAILONLY: a plain icon is not a preview
+            return b''
+        bm = ctypes.create_string_buffer(32)   # BITMAP: type, width, height, ...
+        gdi32.GetObjectW(bmp, 32, bm)
+        w, h = ctypes.c_int32.from_buffer(bm, 4).value, ctypes.c_int32.from_buffer(bm, 8).value
+        bi = _BMI(ctypes.sizeof(_BMI), w, -h, 1, 32, 0)   # top-down 32-bit BGRA
+        px = ctypes.create_string_buffer(w * h * 4)
+        dc = gdi32.CreateCompatibleDC(None)
+        ok = gdi32.GetDIBits(dc, bmp, 0, h, px, ctypes.byref(bi), 0)
+        gdi32.DeleteDC(dc)
+        if not ok:
+            return b''
+        img = Image.frombuffer('RGBA', (w, h), px.raw, 'raw', 'BGRA', 0, 1)
+        if img.getchannel('A').getextrema()[1] == 0:   # many handlers leave alpha at 0 for an opaque picture
+            img = img.convert('RGB')
+        out = io.BytesIO()
+        img.save(out, 'PNG')
+        return out.getvalue()
+    finally:
+        if bmp:
+            gdi32.DeleteObject(bmp)
+        release(f)
+
+
 # ---------- files ----------
 
 def find_files(words, content=False, where='', most=20):
@@ -967,3 +1031,8 @@ def secret_set(name, value):
     buf = (ctypes.c_byte * len(blob)).from_buffer_copy(blob)
     c = _CRED(Type=1, TargetName=f'Atticus/{name}', CredentialBlobSize=len(blob), CredentialBlob=buf, Persist=2, UserName='Atticus')   # Persist 2: this user, this PC
     return bool(_advapi.CredWriteW(ctypes.byref(c), 0))
+
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--thumb'] and len(sys.argv) == 3:   # atticus.py thumb(): PNG base64 on stdout
+    import base64
+    sys.stdout.write(base64.b64encode(thumb(sys.argv[2])).decode())
