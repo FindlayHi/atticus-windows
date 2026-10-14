@@ -25,7 +25,20 @@ static class Program
             Check(Overlay.TranscriptKey("search a b") != Overlay.TranscriptKey("search ab"));
             Check(Speech.Clean(" [BLANK_AUDIO] Open notepad. ") == "Open notepad." && Speech.Clean("Thank you.") == "");
             Check(Hooks.Label(0x20, 3) == "Ctrl+Alt+Space" && Hooks.Label(0x71, 0) == "F2");
+            Check(TextSelection.Landed("new text", "old", "a new  text b") && !TextSelection.Landed("new", "old", "old") && TextSelection.Landed("", "ab", "a"));
+            Check(!TextSelection.Landed("draft", "old", "old changed") && TextSelection.Landed("x", null, "y"));   // unreadable field: nothing to check against
+            Check(TextSelection.Splice("say helo there", 4, "helo", "hello") == "say hello there" && TextSelection.Splice("abc", 1, "x", "y") == null && TextSelection.Splice("ab", 2, "", "c") == "abc");
             Console.WriteLine("native selftest ok"); return;
+        }
+        if (args.Length >= 1 && args[0] == "--selection")   // diagnostics: what the shortcut would read in the front app; --apply "<text>" / --delete puts it there
+        {
+            var sel = TextSelection.CaptureAsync(Native.GetForegroundWindow(), ms: 2000).Result;
+            Console.OutputEncoding = Encoding.UTF8;
+            Console.WriteLine(sel == null ? "null" : System.Text.Json.JsonSerializer.Serialize(new { text = sel.Text, caret = sel.Caret, editable = sel.Editable, pastable = sel.Pastable }));
+            if (sel == null || args.Length < 2) Environment.Exit(sel == null ? 1 : 0);
+            if (!(args[1] == "--delete" || args[1] == "--apply" && args.Length == 3)) { Console.Error.WriteLine("usage: --selection [--apply <text> | --delete]"); Environment.Exit(2); }
+            var ok = sel.Apply(args[1] == "--delete" ? "" : args[2], () => true, IntPtr.Zero).Result;
+            Console.WriteLine(ok ? "landed" : "did not land"); Environment.Exit(ok ? 0 : 1);
         }
         if (args.Length >= 2 && args[0] == "--text") Environment.Exit(WindowText.Run(args[1], args.Length > 2 ? args[2] : ""));
         if (args.Length == 2 && args[0] == "--transcribe")   // diagnostics: a 16 kHz mono WAV through the same speech path

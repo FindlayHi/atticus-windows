@@ -35,6 +35,7 @@
 | *"Find my notes about the Tokyo trip."* | Searches your files by what's inside them and opens the match. |
 | *"What's wrong with this code?"* | Looks at your screen and answers in a line. |
 | *"Reply: sounds good, see you at 7."* | Types it into the app you're in. It never sends. |
+| *"Make this friendlier."* (with text highlighted) | Rewrites it. You review, then Replace, Try again or Copy. |
 | *"Message Sam on Discord: running 10 minutes late."* | Opens the chat and types it. You Allow the send. |
 | *"In Spotify, turn on shuffle."* | Finds the button and presses it. Your mouse stays put. |
 | *"What should I keep watching?"* | Checks Jellyfin and picks up where you left off. |
@@ -110,6 +111,12 @@ A service is only mentioned to the AI when your ask is about it, so each one cos
 
 **Or write one.** A Python file in your integrations folder (linked from Settings) loads next to the built-in ones and survives updates. Copy the shape of any file in `integrations/`. Good ones belong in a pull request.
 
+## Selected text and drafts
+
+Highlight text in any app, then hold the shortcut: Atticus reads the selection (up to 6,000 characters, sent as quoted data, never as instructions) and you can ask about it or have it rewritten. A rewrite shows Replace, Try again and Copy; "delete this" offers Delete. With nothing highlighted but your cursor in a text box, a written reply or email can go right there: Insert, or straight in with Settings → Drafts at my cursor → Insert right away.
+
+It reads with Windows' UI Automation the moment the shortcut goes down (classic Win32 boxes directly), never from password fields. Replace pastes into the same field and checks the text actually landed; your clipboard (text, pictures, files) is put back after, and the draft stays out of clipboard history. If the selection moved or the app won't take it, the box says so and Copy still works. It works in apps that share their text with Windows, which standard text boxes, Notepad, Office and the big browsers do. Apps that draw their own text without accessibility (some games, terminals, older Electron apps) show nothing selected. Turn it off in Settings → Include selected text.
+
 ## Watch for me
 
 Say "tell me when the download is done" or "watch this page until it says shipped". Atticus sets it up once, then checks every 5 seconds on your PC with no AI, so waiting is free. It reads the window with Windows' own text recognition, so the window must stay open (covered is fine, minimized is not). When it fires you get a notification, and it runs a follow-up if you asked for one. Coding agents like Codex are watched through their own log, with no screen at all. Say "stop watching" to cancel.
@@ -134,7 +141,7 @@ This version sends nothing. The daily anonymous user count and the opt-in failur
 
 ## Files
 
-- `win/Atticus/`: the app (hotkey, speech, overlay, setup and Settings windows, tray, updater), in C# with WebView2
+- `win/Atticus/`: the app (hotkey, speech, overlay, selected text, setup and Settings windows, tray, updater), in C# with WebView2
 - `atticus.py`: the brain (fast commands, system prompt, safety checks), kept close to the Mac version so fixes carry over
 - `winctl.py`: Windows' hands (displays, windows, apps, clipboard and typing, screenshots, files, UI Automation)
 - `integrations/`: one file per service, plus `_custom.py` for the ones you add in Settings
@@ -158,7 +165,6 @@ Merged from atticus-mac up to `eba8597` (2026-10-13). These Mac features weren't
 - Meeting Copilot (call audio needs WASAPI loopback instead of ScreenCaptureKit)
 - Background work with a live mini screen, and Chrome page reading and clicking (`ui/web.js`)
 - Native "hands" (clicks, typing, scrolling through Accessibility); `atticus --ui` covers part of it with UI Automation
-- Selected-text rewrite, and drafts inserted at the cursor
 - Contacts lookup, the Report feedback window, and the Apple speech model picker
 
 When merging upstream again, resolve `atticus.py`, `ui/settings.html` and `ui/onboarding.html` by hand, and `git rm` the Mac-only files.
