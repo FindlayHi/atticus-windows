@@ -386,6 +386,27 @@ def opener(target):
     return ''
 
 
+def browser_exe():
+    """The default web browser's .exe, or ''."""
+    buf, n = ctypes.create_unicode_buffer(1024), W.DWORD(1024)
+    if ctypes.WinDLL('shlwapi').AssocQueryStringW(0, 2, 'https', 'open', buf, ctypes.byref(n)) == 0 and os.path.exists(buf.value):
+        return buf.value
+    return ''
+
+
+def new_window(url):
+    """Open a URL in a new window of the default browser, not as a tab in the window the user is using, and without
+    activating it (most browsers honor that). False: not a browser we know how to ask (the caller opens it the usual way)."""
+    exe = browser_exe()
+    flag = {'chrome.exe': '--new-window', 'msedge.exe': '--new-window', 'brave.exe': '--new-window', 'vivaldi.exe': '--new-window',
+            'opera.exe': '--new-window', 'firefox.exe': '-new-window'}.get(os.path.basename(exe).lower())
+    if not flag:
+        return False
+    si = subprocess.STARTUPINFO(); si.dwFlags, si.wShowWindow = 1, 4   # STARTF_USESHOWWINDOW, SW_SHOWNOACTIVATE
+    subprocess.Popen([exe, flag, url], startupinfo=si, close_fds=True)
+    return True
+
+
 # ---------- clipboard and typing ----------
 
 kernel32.GlobalAlloc.restype = ctypes.c_void_p

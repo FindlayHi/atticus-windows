@@ -97,6 +97,7 @@ class BackgroundTests(unittest.TestCase):
 
     def test_background_open_keeps_the_user_in_front(self):
         with patch.object(atticus.os, 'startfile', create=True) as start, patch.object(atticus.winctl, 'opener', return_value='Google Chrome'), \
+                patch.object(atticus.winctl, 'new_window', return_value=False), \
                 patch.object(atticus.winctl, 'front', return_value=('Editor', 'Doc', 111)), patch.object(atticus, 'keep_behind') as behind, \
                 patch.object(atticus, 'preview_app', return_value={'app': 'Google Chrome'}) as preview:
             self.assertEqual(atticus.show('https://x.invalid/a', bg=True), 'opened https://x.invalid/a in the background')

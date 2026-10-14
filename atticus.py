@@ -639,7 +639,9 @@ def show_behind(target):
         free_focus()   # the browser may come forward
     try:
         if is_url(t) or os.path.exists(t):
-            os.startfile(t)
+            # a web page gets its own browser window: as a tab it would take over the window the user is reading
+            if ahead or not re.match(r'^https?://', t, re.I) or not winctl.new_window(t):
+                os.startfile(t)
             app = winctl.opener(t)
         else:
             app = app_named(t) or t
@@ -1055,6 +1057,8 @@ def fast(text):
     if m and MORE.search(m[2]): m = None   # "search amazon for X and find the best one" is two steps: the AI does both
     if m and re.search(r'\b(?:on|at) (?!google|youtube|spotify|amazon|the web|online)[\w.-]+$', m[2]): m = None   # "on allrecipes": that site's own search page, which the AI opens
     if m and not re.search(r'\b(this|that|it|these|my)\b', m[2]) and not re.search(r'\b(for|on|in|the|a|an|and|to|of|some)$', m[2]):   # "search this" needs the screen; "search amazon for" was cut off mid-sentence: AI
+        if os.environ.get('ATTICUS_LIVE') == '1':
+            return None   # free text mid-sentence is often misheard or unfinished: search the confirmed words only
         site, q = m[1] or m[3], urllib.parse.quote(m[2])
         target = {'youtube': f'https://www.youtube.com/results?search_query={q}', 'spotify': f'spotify:search:{q}',
                   'amazon': f'https://www.amazon.com/s?k={q}'}.get(site, f'https://www.google.com/search?q={q}')
@@ -1063,6 +1067,8 @@ def fast(text):
         return f'Searched {m[2]}' + (f' on {site.title()}.' if site in ('youtube', 'spotify', 'amazon') else '.')
     m = re.fullmatch(r'play (?:my |the )?(?:spotify )?(?:playlist )?(?:called |named )?(.+?)( playlist)?( on spotify)?', t)
     if m and not DEICTIC.search(m[1]) and not MORE.search(m[1]):   # "play X" alone may mean a video: only the user's playlist here, anything else goes to the AI (which uses --play)
+        if m[3] and os.environ.get('ATTICUS_LIVE') == '1':
+            return None   # "on spotify" plays any match for the words: wait for the confirmed ones
         reply = play(m[1], anything=bool(m[3]))
         if reply: fast.cmds = [f'{PLAY} {shlex.quote(m[1])}']
         return reply

@@ -111,6 +111,22 @@ class LearningTests(unittest.TestCase):
             self.assertEqual(atticus.fast('search for weather in toronto'), 'Searched weather in toronto.')
         self.assertTrue(all(c.kwargs.get('bg') for c in opened.call_args_list))   # behind the user's app, never over it
 
+    def test_free_text_waits_for_the_confirmed_words(self):
+        with patch.object(atticus, 'show') as opened, patch.object(atticus, 'play') as played, patch.dict(os.environ, {'ATTICUS_LIVE': '1'}):
+            self.assertIsNone(atticus.fast('search for the next video'))   # mid-sentence, before the final transcript
+            self.assertIsNone(atticus.fast('play lofi beats on spotify'))
+        opened.assert_not_called(); played.assert_not_called()
+
+    def test_pages_opened_behind_get_their_own_window(self):
+        with patch.object(atticus.winctl, 'front', return_value=('Notepad', 'x', 1)), patch.object(atticus.winctl, 'new_window', return_value=True) as new, \
+             patch.object(atticus.winctl, 'opener', return_value='Google Chrome'), patch.object(atticus.os, 'startfile', create=True) as tab, \
+             patch.object(atticus, 'preview_app', return_value=None), patch.object(atticus, 'keep_behind'):
+            self.assertIn('in the background', atticus.show('https://www.google.com/search?q=x', bg=True))
+            new.assert_called_once_with('https://www.google.com/search?q=x'); tab.assert_not_called()   # never a tab in the user's window
+            new.return_value = False   # a browser we can't ask: opened the usual way
+            atticus.show('https://example.com', bg=True)
+            tab.assert_called_once_with('https://example.com')
+
     def test_history_finds_past_asks_by_words_or_date(self):
         with open(self.root / 'log.jsonl', 'w') as f:
             f.write(json.dumps({'at': '2026-10-10 09:00:00', 'task': 'find the lamp link', 'reply': 'https://example.com/lamp'}) + '\n')
