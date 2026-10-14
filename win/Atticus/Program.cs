@@ -12,6 +12,7 @@ static class Program
     public static SettingsWindow Settings;
     public static OnboardingWindow Onboarding;
     public static Tray Tray;
+    public static MeetingCopilot Meeting;
     public static Speech Speech = new();
     static SynchronizationContext ui;
 
@@ -25,6 +26,7 @@ static class Program
             Check(Overlay.TranscriptKey("search a b") != Overlay.TranscriptKey("search ab"));
             Check(Speech.Clean(" [BLANK_AUDIO] Open notepad. ") == "Open notepad." && Speech.Clean("Thank you.") == "");
             Check(Hooks.Label(0x20, 3) == "Ctrl+Alt+Space" && Hooks.Label(0x71, 0) == "F2");
+            MeetingChecks();
             Console.WriteLine("native selftest ok"); return;
         }
         if (args.Length >= 2 && args[0] == "--text") Environment.Exit(WindowText.Run(args[1], args.Length > 2 ? args[2] : ""));
@@ -39,6 +41,20 @@ static class Program
             Console.WriteLine(Speech.TranscribeOnce(all.ToArray()).Result + $"  [{(DateTime.Now - t0).TotalSeconds:0.00} s]");
             return;
         }
+        if (args.Length == 2 && args[0] == "--meeting-transcribe")   // diagnostics: a recorded call (any WAV) through the meeting's cutting and speech path
+        {
+            Speech.Load().Wait();
+            if (!Speech.Ready) { Console.Error.WriteLine("no speech model: " + Paths.Model + " " + Speech.Error); Environment.Exit(1); }
+            using var r = new NAudio.Wave.WaveFileReader(args[1]);
+            var down = new Downsampler(r.WaveFormat.SampleRate); var seg = new Segmenter(); var parts = new List<(double at, float[] a)>();
+            var buf = new byte[r.WaveFormat.AverageBytesPerSecond / 10 / r.WaveFormat.BlockAlign * r.WaveFormat.BlockAlign]; int n; long heard = 0;
+            void Add(float[] a) => parts.Add(((heard - a.Length) / 16000.0, a));
+            while ((n = r.Read(buf, 0, buf.Length)) > 0) { var s16 = down.Push(Downsampler.Mono(buf, n, r.WaveFormat)); heard += s16.Length; foreach (var a in seg.Push(s16)) Add(a); }
+            var pad = seg.Push(new float[16000]); heard += 16000; foreach (var a in pad) Add(a);
+            if (seg.Cut() is { } last) Add(last);
+            foreach (var (at, a) in parts) Console.WriteLine($"[{(int)at / 60:00}:{(int)at % 60:00} +{a.Length / 16000.0:0.0}s] " + MeetingCopilot.Tidy(Speech.TranscribeOnce(a, "Atticus.").Result));
+            return;
+        }
         using var one = new Mutex(true, @"Local\Atticus", out var first);
         if (!first) { Send("open"); return; }   // already running: it shows Settings (or setup)
         ApplicationConfiguration.Initialize();
@@ -51,10 +67,44 @@ static class Program
             _ = Launch();
         }
         Application.Run(ctx);
+        try { Meeting?.Discard(); } catch { }   // a meeting in progress keeps its journal, marked ended
         Box?.Hush(); Voice.Shush();
     }
 
-    static void Check(bool ok) { if (!ok) { Console.Error.WriteLine("native selftest failed"); Environment.Exit(1); } }
+    static void MeetingChecks()   // the meeting's pure parts: no capture, no Whisper, a scratch folder
+    {
+        Check(MeetingCopilot.Question("Saarth, your thoughts.", "Saarth Ranka") && !MeetingCopilot.Question("Saarthi is here.", "Saarth") && MeetingCopilot.Question("How will it work", "") && MeetingCopilot.Question("The date?", ""));
+        Check(!MeetingCopilot.Question("Thank you everyone.", "") && !MeetingCopilot.Question("Hey, how are you doing today?", "") && !MeetingCopilot.Question("We ship Friday, right?", "") && !MeetingCopilot.Question("Can you hear me?", ""));
+        Check(MeetingCopilot.Tidy(", Sam, can you send it?.") == "Sam, can you send it?" && MeetingCopilot.Tidy("Done.") == "Done.");
+        Check(MeetingCopilot.Question("How are you thinking about pricing?", "") && MeetingCopilot.Question("How was your experience at Google?", ""));
+        Check(Calls.Name(@"C:#Users#me#AppData#Roaming#Zoom#bin#Zoom.exe") == "Zoom" && Calls.Name("MSTeams_8wekyb3d8bbwe") == "Teams" && Calls.Name(@"C:#Program Files#Google#Chrome#Application#chrome.exe") == "Chrome");
+        Check(Calls.Name(@"C:#Users#me#AppData#Local#Programs#Atticus#Atticus.exe") == null && Calls.Name("Microsoft.WindowsSoundRecorder_8wekyb3d8bbwe") == null && Calls.Name(@"C:#x#notzoom.exe") == null);
+        Check(MeetingCopilot.Echo("We launch on November twelfth", new[] { "We launch on November twelfth." }) && !MeetingCopilot.Echo("Yes", new[] { "Yes." }) && !MeetingCopilot.Echo("I think the budget is fine", new[] { "When do we launch?" }));
+        Check(new Downsampler(48000).Push(new float[48000]).Length is 15999 or 16000 && new Downsampler(44100).Push(new float[44100]).Length is >= 15998 and <= 16001);   // the last output waits for its span to close
+        var stereo = new byte[16]; BitConverter.GetBytes(0.5f).CopyTo(stereo, 0); BitConverter.GetBytes(0.25f).CopyTo(stereo, 4);
+        Check(Math.Abs(Downsampler.Mono(stereo, 16, NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(48000, 2))[0] - 0.375f) < 1e-6);
+        float[] Tone(double secs, float amp) => Enumerable.Range(0, (int)(secs * 16000)).Select(i => amp * MathF.Sin(i * 0.2f)).ToArray();
+        var seg = new Segmenter(); var cuts = new List<float[]>();
+        foreach (var part in new[] { Tone(0.5, 0), Tone(1, 0.1f), Tone(1.2, 0), Tone(0.06, 0.2f), Tone(1.2, 0), Tone(0.8, 0.1f) }) cuts.AddRange(seg.Push(part));
+        Check(cuts.Count == 1 && cuts[0].Length is > 16000 and < 16000 * 3 && seg.Speaking && seg.Cut() is { Length: > 12000 } && seg.Cut() == null);   // speech, a click ignored, speech still going at Stop
+        var long1 = new Segmenter(); Check(long1.Push(Tone(20, 0.1f)).Count == 1);   // nobody pauses: cut at 15 s
+        var root = Path.Combine(Path.GetTempPath(), "atticus-selftest-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var a = new MeetingArchive("Pilot", "Zoom", DateTime.Now, root);
+            a.Append(new { kind = "transcript", text = "First" });
+            File.AppendAllText(Path.Combine(a.Folder, "events.jsonl"), "{\"kind\":\"summary\",\"text\":\"Recap\"}\n");   // atticus.py's recap in between
+            a.Append(new { kind = "transcript", text = "Resumed é" });
+            var lines = File.ReadAllLines(Path.Combine(a.Folder, "events.jsonl"));
+            Check(lines.Length == 3 && lines[1].Contains("Recap") && System.Text.Json.JsonDocument.Parse(lines[2]).RootElement.GetProperty("text").GetString() == "Resumed é");
+            Check(System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(a.Folder, "metadata.json"))).RootElement.GetProperty("app").GetString() == "Zoom");
+            var md = Path.Combine(root, "m.md"); MeetingArchive.Export("Transcript", md); MeetingArchive.Export("Updated", md);
+            Check(File.ReadAllText(md) == "Updated" && Directory.GetFiles(root).Length == 1);
+        }
+        finally { try { Directory.Delete(root, true); } catch { } }
+    }
+
+    static void Check(bool ok, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) { if (!ok) { Console.Error.WriteLine($"native selftest failed (Program.cs line {line})"); Environment.Exit(1); } }
 
     static async Task Launch()
     {
@@ -62,12 +112,14 @@ static class Program
         Directory.CreateDirectory(Paths.Config);
         Settings = new SettingsWindow();
         Onboarding = new OnboardingWindow();
+        Meeting = new MeetingCopilot();
         Tray = new Tray();
         Box = new Overlay(Speech);
         await Box.Init();
         Hooks.Install();
         _ = Speech.Load();
         Listen();
+        Meeting.Watch();
         Updater.Schedule();
         if (!Prefs.Bool("onboarded") || !File.Exists(Paths.Model)) Onboarding.Open();
         else _ = Task.Run(() => OnboardingWindow.Plan()).ContinueWith(t => { if (t.Result.TryGetProperty("ok", out var ok) && !ok.GetBoolean()) Post(() => Onboarding.Open()); });   // set up once, but Claude signed out since
@@ -183,7 +235,8 @@ sealed class Tray
         icon.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) Program.Settings.Open(); };
         Build();
     }
-    public bool Visible { set => icon.Visible = value; }
+    public bool Visible { set => icon.Visible = value || Program.Meeting?.Running == true; }
+    public void Listening(bool on) { icon.Text = on ? "Atticus · Listening to a meeting" : "Atticus"; icon.Visible = on || Prefs.Bool("menuIcon"); }   // while it hears a call, the tray says so
     public void Notify(string text) { icon.Visible = true; icon.ShowBalloonTip(5000, "Atticus", text, ToolTipIcon.None); if (!Prefs.Bool("menuIcon")) Task.Delay(8000).ContinueWith(_ => Program.Post(() => icon.Visible = Prefs.Bool("menuIcon"))); }
     void Build()
     {
@@ -192,7 +245,8 @@ sealed class Tray
         var hint = Prefs.Str("input") == "type" ? $"Press {keys} to type" : Prefs.Str("talkMode") == "toggle" ? $"Press {keys} to talk · again to send" : $"Hold {keys} and talk";
         m.Items.Add(new ToolStripMenuItem(Prefs.Bool("paused") ? "Atticus is paused" : hint) { Enabled = false });
         m.Items.Add(new ToolStripSeparator());
-        m.Items.Add("Ask Atticus", null, (_, _) => { Program.Box.clickTalk = true; Program.Box.Start(); });
+        m.Items.Add("Ask Atticus", null, (_, _) => { if (Program.Meeting.Running) { Program.Meeting.Focus(); return; } Program.Box.clickTalk = true; Program.Box.Start(); });
+        if (Prefs.Bool("meeting")) m.Items.Add(Program.Meeting.Running ? "Stop Meeting Copilot" : "Start Meeting Copilot", null, (_, _) => { if (Program.Meeting.Running) Program.Meeting.Stop(); else Program.Meeting.Show(); });
         m.Items.Add(Prefs.Bool("paused") ? "Resume Atticus" : "Pause Atticus", null, (_, _) => { Program.Settings.Apply("paused", !Prefs.Bool("paused")); Program.Settings.Push(); });
         m.Items.Add(new ToolStripSeparator());
         m.Items.Add(new ToolStripMenuItem(Today()) { Enabled = false });

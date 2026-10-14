@@ -40,6 +40,7 @@ static class Prefs
         ["speak"] = false, ["autoCopy"] = false, ["hideWhenSharing"] = true, ["menuIcon"] = true, ["autoUpdate"] = true,
         ["learn"] = true, ["safe"] = true, ["pointer"] = false, ["learnMe"] = true, ["stats"] = true, ["tips"] = true, ["askMe"] = true, ["escalate"] = true, ["escalateAuto"] = false, ["improve"] = false, ["improveAsked"] = false, ["input"] = "voice", ["talkMode"] = "hold",
         ["boxW"] = 460, ["boxH"] = 360, ["speechModel"] = "base.en", ["onboarded"] = false,
+        ["meeting"] = false, ["meetingSave"] = true, ["meetingSummary"] = true, ["meetingDetect"] = true, ["meetingAuto"] = "sure", ["meetingFrame"] = "", ["meetingSize"] = "",
     };
     public static Dictionary<string, object> D = Load();
 

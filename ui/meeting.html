@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Meeting Copilot</title>
+<!-- Meeting Copilot panel. Atticus.exe (Meeting.cs) calls window.meeting.* and gets {do: …} messages back. States: nudge · prep · live · ended. -->
+<style>
+:root{color-scheme:dark;--fg:#f5f5f7;--fg2:#a1a1a6;--fg3:#7c7c82;--card:rgba(255,255,255,.06);--card2:rgba(255,255,255,.1);--line:rgba(255,255,255,.12);--accent:#0a84ff;--ease:cubic-bezier(.2,.8,.2,1);--spring:cubic-bezier(.34,1.56,.64,1)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:transparent;font:13px/1.4 -apple-system,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;color:var(--fg);-webkit-font-smoothing:antialiased;-webkit-user-select:none;user-select:none;cursor:default}
+html{overflow:hidden;background:rgba(18,18,20,.55)}
+body{padding:14px 16px 16px;display:flex;flex-direction:column;overflow:auto}
+body.fit{height:auto;max-height:100%;overflow:auto}
+body::-webkit-scrollbar{display:none}
+body.transitioning{overflow:hidden}
+body.transitioning>*{opacity:0;pointer-events:none}
+body.revealing>*{animation:reveal .16s var(--ease) both}
+[hidden]{display:none!important}
+button,input,textarea{font:inherit;color:inherit}
+button{border:0;border-radius:999px;background:var(--card2);box-shadow:inset 0 0 0 .5px var(--line);padding:6px 12px;cursor:pointer;transition:background .18s var(--ease),transform .18s var(--ease),opacity .18s}
+button.hover:not(:disabled){background:rgba(255,255,255,.16)}
+button:active{transform:scale(.97)}
+button:disabled{opacity:.4;cursor:default;transform:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.blue{background:var(--accent);box-shadow:none;font-weight:500}
+.blue.hover{background:#2994ff}
+.quiet{background:none;box-shadow:none;color:var(--fg2)}
+.quiet.hover{background:var(--card);color:var(--fg)}
+.big{width:100%;padding:10px 14px;font-size:13.5px}
+small,.note{color:var(--fg3);font-size:11.5px;line-height:1.45}
+textarea,input{background:rgba(0,0,0,.18);border:0;box-shadow:inset 0 0 0 .5px var(--line);border-radius:10px;padding:9px 11px;width:100%;min-width:0;outline:none;-webkit-user-select:text;user-select:text;cursor:text;transition:box-shadow .18s var(--ease)}
+textarea:focus,input:focus{box-shadow:inset 0 0 0 1px rgba(10,132,255,.7)}
+textarea{resize:none;line-height:1.45}
+::placeholder{color:var(--fg3)}
+
+/* header */
+header{display:flex;align-items:center;gap:8px;flex:none;min-height:34px}
+header,#nudge>div{cursor:grab}
+canvas{width:30px;height:30px;flex:none;margin-left:-3px}
+#title{flex:1;min-width:0;display:flex;flex-direction:column}
+#title b{font-size:13px;font-weight:600;letter-spacing:-.1px;white-space:nowrap}
+#saving{font-size:10px!important;color:#8cbda1!important;white-space:nowrap}
+#saving::before{content:"";display:inline-block;width:4px;height:4px;border-radius:50%;background:currentColor;margin-right:4px;vertical-align:2px}
+#recap{white-space:pre-wrap;user-select:text;-webkit-user-select:text;color:var(--fg2);font-size:12px;line-height:1.5;margin:12px 0;overflow-wrap:anywhere}
+body.saved #pillow::after{content:"";position:absolute;right:5px;top:5px;width:4px;height:4px;border-radius:50%;background:#8cbda1}
+#title span{font-size:11.5px;color:var(--fg2);font-variant-numeric:tabular-nums}
+#stop{background:rgba(255,69,58,.16);box-shadow:inset 0 0 0 .5px rgba(255,69,58,.35);color:#ff6961;font-weight:500}
+#stop.hover{background:rgba(255,69,58,.26)}
+.icon{width:26px;height:26px;padding:0;flex:none}
+.icon svg{display:block;width:14px;height:14px;margin:auto;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
+.icon svg.solid{fill:currentColor;stroke:none}
+
+/* nudge: the small "call soon" card */
+html:has(#nudge:not([hidden])){min-width:var(--panel-width,340px);overflow:hidden}   /* lays out at full width while the nudge is still a corner blob */
+#nudge{flex:none;display:flex;flex-direction:column;gap:12px}
+#nudge .when{color:var(--fg2);font-size:12px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#nudge .bar{display:flex;gap:8px}#nudge .bar button{flex:1}
+
+/* prep */
+#prep{flex:none;margin-top:14px}
+h1{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0}
+#prep .note{margin:5px 0 12px;font-size:12px;color:var(--fg2)}
+#context{height:118px}
+#attach{display:flex;align-items:center;gap:6px;margin:8px 0 14px;min-height:28px}
+#attach button{font-size:12px;padding:5px 10px}
+#filechip{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg2);background:var(--card);border-radius:999px;padding:3px 4px 3px 10px;box-shadow:inset 0 0 0 .5px var(--line)}
+#filechip button{width:18px;height:18px;padding:0;font-size:11px;line-height:18px;background:none;box-shadow:none;color:var(--fg3)}
+#prep.over #context{box-shadow:inset 0 0 0 1.5px var(--accent);background:rgba(10,132,255,.08)}
+#prep .fine{margin-top:10px;text-align:center}
+
+.attachments{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.attachment{max-width:100%;text-align:left;border-radius:10px;font-size:11.5px;overflow:hidden}
+.attachment span{display:block;color:var(--fg3);overflow-wrap:anywhere;font-size:10px}
+.attachment img{display:none;max-width:100%;max-height:180px;margin-top:6px;object-fit:contain}
+.attachment.expanded{width:100%}.attachment.expanded img{display:block}
+/* live */
+#live{flex:1;min-height:0;display:flex;flex-direction:column;margin-top:12px}
+/* Answers · Transcript · Notes: the same segmented control as Settings */
+#tabs,#mode{display:flex;padding:2px;border-radius:8px;background:rgba(0,0,0,.22);box-shadow:inset 0 0 0 .5px var(--line);flex:none}
+#tabs button,#mode button{flex:1;position:relative;padding:4px 0;border-radius:6px;background:none;box-shadow:none;font-size:12px;color:var(--fg2)}
+#tabs button.hover,#mode button.hover{background:none;color:var(--fg)}
+#tabs button[aria-selected=true],#mode button[aria-pressed=true]{background:#636366;color:var(--fg);box-shadow:0 1px 3px rgba(0,0,0,.15),inset 0 0 0 .5px var(--line)}
+#tabs button.new::after{content:'';position:absolute;top:50%;margin:-3px 0 0 6px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.pane{flex:1;min-height:0;overflow:auto;margin:0 -16px;padding:2px 16px 10px}
+.pane::-webkit-scrollbar{width:0}
+#brief{height:150px;font-size:12px}
+#ctxhelp{margin:12px 0 8px;font-size:11.5px;color:var(--fg3)}
+#livechoose{margin-top:8px;font-size:12px;padding:5px 10px}
+#retry{margin:10px 0 0;width:100%}
+#empty{text-align:center;color:var(--fg3);font-size:12px;padding:48px 12px 20px;line-height:1.5}
+#empty b{display:block;color:var(--fg2);font-weight:500;font-size:13px;margin-bottom:2px}
+.question{position:relative;padding:12px;border-radius:11px;background:var(--card);box-shadow:inset 0 0 0 .5px var(--line);margin:10px 0;overflow-wrap:anywhere;animation:rise .2s var(--ease) both;transition:opacity .2s var(--ease),transform .2s var(--ease)}
+.question.gone{opacity:0;transform:scale(.96)}
+.meta{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums}
+.meta .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgba(10,132,255,.18)}
+.question p{margin:4px 0 0;font-size:12.5px;line-height:1.4;color:var(--fg2)}
+.answer{margin-top:9px;font-size:12px;padding:5px 12px;color:#64b0ff;background:rgba(10,132,255,.14);box-shadow:inset 0 0 0 .5px rgba(10,132,255,.35)}
+.answer.hover{background:rgba(10,132,255,.24)}
+.answer.thinking{color:var(--fg3);background:none;box-shadow:none;padding-left:0}
+.question .reason{font-size:12px;color:var(--fg2);margin-top:10px}
+.response{display:block;width:100%;margin:10px 0 0;padding:10px 0 0;text-align:left;background:none;box-shadow:none;border-radius:0;border-top:.5px solid var(--line);animation:reveal .18s var(--ease) both}
+.response.hover{background:none;transform:none}
+.response strong{display:block;font-size:14px;font-weight:600;line-height:1.38;letter-spacing:-.1px}
+.response span{display:block;font-size:12px;color:var(--fg2);margin-top:4px;line-height:1.4}
+.response em{display:block;font-style:normal;font-size:10.5px;color:var(--fg3);margin-top:8px}
+.response.copied em{color:#30d158}
+.response small{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:500;color:var(--fg3);margin-bottom:5px;letter-spacing:.1px}
+.response small::before{content:'';width:5px;height:5px;border-radius:50%;background:#bf5af2}
+#mode{margin:0 0 12px}
+#history{margin:2px 0 4px}
+#history summary{list-style:none;cursor:pointer;color:var(--fg3);font-size:11.5px;padding:6px 0}
+#history summary::-webkit-details-marker{display:none}
+#older .question{padding:8px 10px;margin:6px 0;animation:none}
+#older .question:not(.expanded) .body{display:none}
+#older .collapsed{display:block;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:none;box-shadow:none;padding:0;color:var(--fg2);font-size:12px;border-radius:0}
+#older .expanded .collapsed{display:none}
+.collapsed{display:none}
+
+/* transcript: every line can be answered, for questions Atticus didn't catch */
+#lines{-webkit-user-select:text;user-select:text;cursor:text;padding-top:8px}
+.line{display:flex;gap:10px;font-size:12.5px;line-height:1.45;color:var(--fg);padding:5px 8px;margin:0 -8px;border-radius:8px;position:relative;transition:background .18s var(--ease)}
+.line.hover{background:var(--card)}
+.line .t{flex:none;width:32px;color:var(--fg3);font-size:10.5px;font-variant-numeric:tabular-nums;padding-top:2px;-webkit-user-select:none;user-select:none}
+.line .text{flex:1;min-width:0;overflow-wrap:anywhere}
+.line .text b{font-weight:500;color:var(--fg3);-webkit-user-select:none;user-select:none}
+.line.mine .text{color:var(--fg2)}
+.line.asked .t{color:var(--accent)}
+.line.live .text{color:var(--fg3)}
+.lineask{position:absolute;right:6px;top:3px;font-size:11px;padding:2px 9px;opacity:0;-webkit-user-select:none;user-select:none}
+.line.hover .lineask,.lineask:focus-visible{opacity:1}
+#selected{position:sticky;bottom:0;margin-top:8px;font-size:11.5px;padding:5px 11px;background:#3a3a3e}
+#nolines{text-align:center;color:var(--fg3);font-size:12px;padding:48px 12px 20px}
+
+/* ask bar */
+footer{flex:none;padding-top:10px;border-top:.5px solid var(--line);margin:0 -16px;padding:10px 16px 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chips button{font-size:11.5px;color:var(--fg2);padding:5px 10px;white-space:nowrap}
+.chips button.hover{color:var(--fg)}
+form{position:relative}
+#ask{padding-right:40px;border-radius:12px;height:38px}
+#send{position:absolute;right:5px;top:5px;width:28px;height:28px;padding:0;font-size:14px;line-height:28px}
+/* empty box: the button is the mic (talk to Atticus, e.g. while muted in the call); typed text makes it Send */
+#send svg{display:block;width:14px;height:14px;margin:auto;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+#send.blue svg,#send:not(.blue) b{display:none}
+#send b{font-weight:500}
+#voicebar{position:relative}
+#heard{margin:0 0 8px auto;width:fit-content;max-width:88%;padding:8px 12px;border-radius:14px 14px 4px 14px;background:var(--card2);font-size:12.5px;line-height:1.4;overflow-wrap:anywhere;animation:rise .2s var(--ease) both}
+#heard.waiting{color:var(--fg3)}
+#voicein{width:100%;height:38px;display:flex;align-items:center;justify-content:center;padding:0 40px 0 12px;border-radius:12px;background:rgba(0,0,0,.18);box-shadow:inset 0 0 0 1px rgba(10,132,255,.7);cursor:text}
+#voicein.hover{background:rgba(0,0,0,.24)}
+#voicesend{position:absolute;right:5px;bottom:5px;width:28px;height:28px;padding:0;font-size:14px}
+
+#resize{position:fixed;bottom:0;right:0;width:14px;height:14px;padding:0;border-radius:0;box-shadow:none;background:none;color:var(--fg3);opacity:.5;font-size:9px;line-height:14px;cursor:nwse-resize;touch-action:none;z-index:3}
+/* minimized: a small pill, the live wave then the orb (like Fathom's) */
+#pillow{display:flex;align-items:center;justify-content:center;flex:1}
+#restore{display:flex;align-items:center;gap:8px;background:none;box-shadow:none;padding:0}
+#restore.hover{background:none}
+#orb3{width:28px;height:28px;margin:0;transition:transform .12s var(--ease)}
+#wave{display:flex;align-items:center;gap:2px;height:26px;width:61px;flex:none}
+#askwave{display:flex;align-items:center;gap:2px;height:26px;flex:none}
+:is(#wave,#askwave) i{display:block;width:3px;height:3px;background:var(--accent);border-radius:3px;transition:height .1s var(--ease)}
+body.compact{padding:8px 12px;overflow:hidden}
+/* ended */
+#ended{flex:none;margin-top:14px}
+#ended .note{margin:5px 0 14px;font-size:12px;color:var(--fg2)}
+#ended .bar{display:flex;gap:8px}#ended .bar button{flex:1;padding:9px}
+
+#toast{position:fixed;left:16px;right:16px;bottom:14px;padding:9px 12px;border-radius:11px;background:rgba(58,58,62,.96);box-shadow:0 6px 20px rgba(0,0,0,.35),inset 0 0 0 .5px var(--line);font-size:12px;color:var(--fg);animation:rise .3s var(--ease) both;z-index:2}
+#notice{flex:none;margin:8px 0 0;font-size:11px;color:var(--fg3);transition:opacity .4s}
+
+@keyframes reveal{from{opacity:0}to{opacity:1}}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+body.reduce *{animation:none!important;transition:none!important}
+</style></head><body class="fit">
+<header id="head" hidden><canvas id="orb" aria-hidden="true"></canvas><div id="title"><b id="h1">Meeting Copilot</b><span id="status">Getting ready</span><span id="saving" hidden>Saving transcript</span></div><button id="minimize" class="quiet icon" aria-label="Minimize meeting panel" title="Minimize" hidden><svg viewBox="0 0 16 16"><path d="M4 8h8"/></svg></button><button id="pause" class="quiet icon" aria-label="Pause meeting" title="Pause" hidden><svg class="solid" viewBox="0 0 16 16"><rect x="4.5" y="3.5" width="2.4" height="9" rx="1"/><rect x="9.1" y="3.5" width="2.4" height="9" rx="1"/></svg></button><button id="stop" hidden>End</button><button id="close" class="quiet icon" aria-label="Close" title="Close (Esc)"><svg viewBox="0 0 16 16"><path d="M5 5l6 6M11 5l-6 6"/></svg></button></header>
+
+<section id="pillow" hidden><button id="restore" aria-label="Restore meeting panel" title="Restore"><span id="wave" aria-hidden="true"></span><canvas id="orb3" aria-hidden="true"></canvas></button></section>
+<button id="resize" aria-label="Resize meeting panel" title="Drag to resize · arrow keys to adjust" hidden>◢</button>
+
+<section id="nudge" hidden>
+  <div style="display:flex;gap:10px;align-items:center"><canvas id="orb2" aria-hidden="true"></canvas><div style="min-width:0;flex:1"><b id="ntitle" style="display:block;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></b><div class="when" id="nwhen"></div></div></div>
+  <div class="bar"><button id="later" class="quiet">Not now</button><button id="ready" class="blue">Get ready</button></div>
+</section>
+
+<section id="prep" hidden>
+  <h1>Get ready for your call</h1>
+  <p class="note">Atticus listens for questions and suggests answers. Add notes or files to make them more useful.</p>
+  <textarea id="context" maxlength="20000" aria-label="What's this call about" placeholder="Interview with Dana at Stripe. I want the summer internship.&#10;&#10;Or paste an agenda, notes or a link."></textarea>
+  <div id="attach"><button id="choose" class="quiet">＋ Add files</button><span id="filechip" hidden><span id="filename">Files added</span><button id="unfile" aria-label="Remove files">✕</button></span></div>
+  <div id="prepfiles" class="attachments"></div>
+  <div id="mode" role="group" aria-label="Where is this meeting"><button data-mode="call" aria-pressed="true">On a call</button><button data-mode="room" aria-pressed="false">In person</button></div>
+  <button id="start" class="blue big" disabled>Start listening</button>
+  <p class="note fine">Hears the call and your microphone. Transcripts save only on this PC. Change this in Settings.</p>
+</section>
+
+<section id="live" hidden>
+  <nav id="tabs" role="tablist" aria-label="Meeting views"><button role="tab" data-tab="answers" aria-selected="true" aria-controls="scroll">Answers</button><button role="tab" data-tab="transcript" aria-selected="false" aria-controls="transcript">Transcript</button><button role="tab" data-tab="notes" aria-selected="false" aria-controls="ctx">Notes</button></nav>
+  <div id="scroll" class="pane" role="tabpanel">
+    <div id="empty"><b>Listening for questions</b>Answers show up here.<br>Missed one? Find it in Transcript.</div>
+    <div id="questions" aria-live="polite"></div>
+    <details id="history" hidden><summary>Earlier questions</summary><div id="older"></div></details>
+  </div>
+  <section id="transcript" class="pane" role="tabpanel" hidden><div id="nolines">Words show up here as people talk.</div><div id="lines"></div><div id="partial" class="line live" hidden></div><div id="micpartial" class="line live mine" hidden></div><button id="selected" hidden>Ask about selected text</button></section>
+  <section id="ctx" class="pane" role="tabpanel" hidden><p id="ctxhelp">Facts Atticus should use. Edit them any time.</p><textarea id="brief" maxlength="1500" aria-label="Meeting notes" placeholder="Who’s on the call, what it’s about, what you want."></textarea><button id="livechoose" class="quiet">＋ Add files</button><div id="livefiles" class="attachments"></div><button id="retry" class="blue" hidden>Answer with these notes</button></section>
+</section>
+
+<footer id="askbar" hidden><div class="chips"><button data-ask="What did I miss?">Catch me up</button><button id="screen">Explain the screen</button></div><form id="askform"><input id="ask" placeholder="Ask about the call…" aria-label="Ask about the call" maxlength="1500" autocomplete="off"><button id="send" type="button" aria-label="Ask by voice" title="Ask by voice"><b>↑</b><svg class="mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></button></form><div id="voicebar" hidden><p id="heard" class="waiting">Listening…</p><button id="voicein" aria-label="Type instead" title="Click to type instead"><span id="askwave" aria-hidden="true"></span></button><button id="voicesend" class="blue" aria-label="Send">↑</button></div></footer>
+
+<section id="ended" hidden><h1 id="endtitle">Your meeting</h1><p class="note" id="endnote">Saved on this PC.</p><div id="recap" hidden></div><button id="endcopy" class="quiet big">Copy transcript</button><button id="allmeetings" class="quiet big">See all meetings →</button><button id="resume" class="blue big">Resume listening</button><div class="bar" style="margin-top:8px"><button id="save">Done</button><button id="delete">Delete meeting</button></div></section>
+
+<p id="notice" hidden>Atticus hears this call and your microphone. Transcripts stay on this PC.</p>
+<div id="toast" role="status" hidden></div>
+<script type="text/plain" id="orbsrc">/*ORBS*/</script>
+<script type="module">
+const $=id=>document.getElementById(id), post=m=>window.webkit?.messageHandlers.meeting.postMessage(m);
+const savedTranscript=[];
+let saving=false, voicing=false, running=false, capturing=false, minimized=false, seconds=0, touched=new Set(), cards=new Map(), selection='', selectionContext='', files='', lineCount=0, toastTimer, viewTransition=0, retryId=null;
+const time=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+const show=(id,on)=>$(id).hidden=!on;
+const status=t=>{$('status').textContent=t;$('restore').setAttribute('aria-label','Restore meeting panel · '+(capturing?'Listening':t))};
+// Native mouse tracking keeps the original anchor even when the window moves under the pointer.
+const dragTarget=e=>!!e.target.closest('#restore')||!e.target.closest('button,input,textarea,a,summary,.line,.question,.note,h1,#notice,#toast')&&(e.target.closest('header,#nudge>div')||![...e.target.childNodes].some(n=>n.nodeType===3&&n.textContent.trim()));
+document.addEventListener('pointerdown',e=>{if(e.button===0&&dragTarget(e))post({do:'drag'})});
+document.addEventListener('dblclick',e=>{if(dragTarget(e)&&e.target.closest('header,#nudge>div,#pillow'))post({do:'resetFrame'})});
+// Short states size the panel to their content; the live view takes the full height.
+function fit(reveal){requestAnimationFrame(()=>post({do:'size',h:minimized?44:running?0:Math.ceil(document.body.scrollHeight),...(Number.isInteger(reveal)?{reveal}:{})}))}
+function view(name){
+  document.body.classList.remove('revealing');document.body.classList.add('transitioning');const reveal=++viewTransition;
+  for(const s of ['nudge','prep','live','ended','pillow'])show(s,s===name);
+  show('head',!['nudge','pillow'].includes(name));show('minimize',name==='live');show('resize',name==='live');show('askbar',name==='live');show('stop',name==='live');show('pause',name==='live');show('close',name!=='live');show('saving',name==='live'&&saving);
+  document.body.classList.toggle('fit',name!=='live');fit(reveal);
+  setTimeout(()=>meeting.settled(reveal),600);   // never stay blank if the native resize never reports back
+}
+function tab(name){
+  for(const b of $('tabs').children){const on=b.dataset.tab===name;b.setAttribute('aria-selected',String(on));if(on)b.classList.remove('new')}
+  show('scroll',name==='answers');show('transcript',name==='transcript');show('ctx',name==='notes');
+  if(name==='transcript')$('transcript').scrollTop=$('transcript').scrollHeight;if(name==='notes')$('brief').focus();
+}
+const atEnd=()=>$('transcript').scrollHeight-$('transcript').scrollTop-$('transcript').clientHeight<40;
+const follow=(was)=>{if(was)$('transcript').scrollTop=$('transcript').scrollHeight};
+function toast(text){$('toast').textContent=text;show('toast',true);clearTimeout(toastTimer);toastTimer=setTimeout(()=>show('toast',false),4000)}
+function begin(){const context=($('context').value.trim()+(files?'\n'+files:'')).trim();$('brief').value=context.slice(0,1500);$('start').disabled=true;post({do:'start',context,room:room()})}
+function ask(text){if(!running||!text.trim())return;post({do:'ask',text:selectionContext?`Context: ${selectionContext}\nQuestion: ${text}`:text});selectionContext='';$('ask').value='';syncSend();$('ask').placeholder='Ask about the call…'}
+function syncSend(){const has=!!$('ask').value.trim();$('send').classList.toggle('blue',has);$('send').title=has?'Send':'Ask by voice';$('send').setAttribute('aria-label',$('send').title)}
+// Voice ask: the box becomes waves and a bubble of what you say. Send asks it; clicking the waves goes back to typing with those words; Esc cancels.
+function voice(on,then){
+  if(on){if(!running||voicing)return;voicing=true;$('heard').textContent='Listening…';$('heard').classList.add('waiting');show('askform',false);show('voicebar',true);show('micpartial',false);post({do:'voice',on:true});return}
+  if(!voicing)return;voicing=false;const text=$('heard').classList.contains('waiting')?'':$('heard').textContent;
+  show('voicebar',false);show('askform',true);post({do:'voice',on:false});
+  if(then==='send'&&text)ask(text);else if(then==='type'){$('ask').value=text;syncSend();$('ask').focus()}
+}
+
+window.addEventListener('resize',()=>{if(!running)fit()});
+$('start').onclick=begin;
+const room=()=>$('mode').querySelector('[aria-pressed=true]').dataset.mode==='room';
+for(const b of $('mode').children)b.onclick=()=>meeting.mode(b.dataset.mode);
+$('context').onkeydown=e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){e.preventDefault();begin()}};
+$('close').onclick=$('later').onclick=()=>post({do:'delete'});
+$('ready').onclick=()=>{post({do:'focus'});view('prep');$('context').focus()};
+$('stop').onclick=()=>post({do:'stop'});
+$('pause').onclick=()=>post({do:'pause'});
+$('minimize').onclick=()=>post({do:'compact',on:true});
+$('restore').onclick=()=>post({do:'compact',on:false});
+for(let i=0;i<13;i++)$('wave').append(document.createElement('i'));
+for(let i=0;i<31;i++)$('askwave').append(document.createElement('i'));
+let resizing;
+$('resize').onpointerdown=e=>{e.preventDefault();resizing={x:e.clientX,y:e.clientY,w:innerWidth,h:innerHeight};$('resize').setPointerCapture(e.pointerId)};
+$('resize').onpointermove=e=>{if(resizing)post({do:'resize',w:resizing.w+e.clientX-resizing.x,h:resizing.h+e.clientY-resizing.y})};
+$('resize').onpointerup=$('resize').onpointercancel=()=>{resizing=null;post({do:'rememberFrame'})};
+$('resize').onkeydown=e=>{const delta={ArrowLeft:[-20,0],ArrowRight:[20,0],ArrowUp:[0,-20],ArrowDown:[0,20]}[e.key];if(delta){e.preventDefault();post({do:'resize',w:innerWidth+delta[0],h:innerHeight+delta[1]});post({do:'rememberFrame'})};};
+$('resume').onclick=()=>{$('resume').disabled=true;post({do:'resume'})};
+$('save').onclick=()=>{$('save').disabled=true;$('resume').disabled=true;post({do:'save'})};
+$('delete').onclick=()=>post({do:'deleteSaved'});
+$('endcopy').onclick=()=>{post({do:'copy',text:savedTranscript.map(r=>`${time(r.seconds||0)}  ${r.mic?'You':'Them'}: ${r.text}`).join('\n')});toast('Transcript copied')};
+$('allmeetings').onclick=()=>post({do:'meetings'});
+$('choose').onclick=$('livechoose').onclick=()=>post({do:'chooseFiles'});
+$('unfile').onclick=()=>{files='';$('prepfiles').replaceChildren();show('filechip',false);fit()};
+for(const b of $('tabs').children)b.onclick=()=>tab(b.dataset.tab);
+$('brief').oninput=()=>post({do:'brief',text:$('brief').value});
+$('retry').onclick=()=>{const d=cards.get(retryId);if(!d)return;post({do:'answer',id:retryId,text:d.querySelector('p').textContent});retryId=null;show('retry',false);tab('answers')};
+$('askform').onsubmit=e=>{e.preventDefault();ask($('ask').value)};
+$('ask').oninput=syncSend;
+$('send').onclick=()=>$('ask').value.trim()?ask($('ask').value):voice(true);
+$('voicesend').onclick=()=>voice(false,'send');
+$('voicein').onclick=()=>voice(false,'type');
+document.querySelectorAll('[data-ask]').forEach(b=>b.onclick=()=>ask(b.dataset.ask));
+$('screen').onclick=()=>{post({do:'screen',text:$('ask').value.trim()||'Explain what is on the shared screen.'});$('ask').value='';syncSend()};
+document.addEventListener('selectionchange',()=>{const s=window.getSelection();selection=s&&$('lines').contains(s.anchorNode)&&$('lines').contains(s.focusNode)?s.toString().trim().slice(0,1200):'';show('selected',!!selection)});
+$('selected').onclick=()=>{selectionContext=selection;$('ask').value='';$('ask').placeholder='Ask about those lines…';$('ask').focus();show('selected',false)};
+// Files dropped anywhere on the prep view (the native view reads them; WebKit gives no paths).
+$('prep').ondragover=e=>{e.preventDefault();$('prep').classList.add('over')};
+$('prep').ondragleave=()=>$('prep').classList.remove('over');
+$('prep').ondrop=e=>{e.preventDefault();$('prep').classList.remove('over')};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();if(voicing){voice(false);return}if(document.activeElement===$('brief')){tab('answers');return}post({do:running?'stop':'delete'})}});
+
+function card(row){
+  if(cards.has(row.id))return;
+  const d=document.createElement('article');d.className='question';d.dataset.id=row.id;d.hidden=!!(row.auto&&row.heard);if(!d.hidden)show('empty',false);   // heard questions appear only once answered
+  const collapsed=document.createElement('button');collapsed.className='collapsed';collapsed.textContent=row.text;collapsed.onclick=()=>{d.classList.add('expanded');touched.add(row.id)};
+  const body=document.createElement('div');body.className='body';
+  const meta=document.createElement('div');meta.className='meta';const dot=document.createElement('span');dot.className='dot';const when=document.createElement('span');when.textContent=time(row.seconds||0);meta.append(dot,when);
+  const q=document.createElement('p');q.textContent=row.text;
+  const answer=document.createElement('button');answer.className='answer';answer.textContent=row.auto?'Waiting…':'Suggest an answer';answer.disabled=!!row.auto;answer.onclick=()=>{touched.add(row.id);post({do:'answer',id:row.id,text:row.text})};
+  body.append(meta,q,answer);d.append(collapsed,body);
+  d.onpointerdown=d.onfocusin=()=>touched.add(row.id);
+  cards.set(row.id,d);$('questions').prepend(d);$('scroll').scrollTop=0;
+  setTimeout(()=>dot.remove(),6000);
+  while($('questions').children.length>4){$('older').prepend($('questions').lastElementChild);show('history',true)}
+}
+document.addEventListener('click',e=>{if(!e.target.closest('.attachment'))document.querySelectorAll('.attachment.expanded').forEach(b=>b.classList.remove('expanded'))});
+window.meeting={
+  privacy(on){saving=on;this.mode()},
+  mode(m){if(m)for(const b of $('mode').children)b.setAttribute('aria-pressed',String(b.dataset.mode===m));document.querySelector('#prep h1').textContent=room()?'Get ready for your meeting':'Get ready for your call';$('notice').textContent=(room()?'Atticus hears the room through your microphone.':'Atticus hears this call and your microphone.')+' Transcripts stay on this PC.';document.querySelector('#prep .fine').textContent=(room()?'Hears the room through your microphone. No call needed.':'Hears the call and your microphone.')+(saving?' Transcripts save only on this PC.':' Transcript saving is off.')},
+  saving(on){saving=on;document.body.classList.toggle('saved',on);show('saving',running&&!minimized&&on);$('endnote').textContent=on?'Saved on this PC.':'This transcript isn’t saved. Copy it before closing. Enable saving in Settings for future meetings.';$('delete').disabled=!on;$('restore').title=on?'Restore · Saving transcript':'Restore'},
+  recap(m){$('recap').textContent=m.summary+(m.action_items?.length?'\n\nAction items\n'+m.action_items.map(s=>'• '+s).join('\n'):'');show('recap',!!m.summary);if(!running)fit()},
+  settled(id){if(id!==viewTransition)return;document.body.classList.remove('transitioning');document.body.classList.add('revealing')},
+  compact(on){if(!running)return;if(on)voice(false);minimized=on;show('notice',false);show('toast',false);document.body.classList.toggle('compact',on);view(on?'pillow':'live');if(!on)$('ask').focus()},
+  level(value){if(!running||!(minimized||voicing))return;const bars=[...$(minimized?'wave':'askwave').children],heights=bars.map(b=>b.style.height||'3px');bars.forEach((b,i)=>b.style.height=i===bars.length-1?`${3+Math.min(1,Math.max(0,value)*4)*23}px`:heights[i+1]);if(!document.body.classList.contains('reduce'))$('orb3').style.transform=`scale(${1+Math.min(1,Math.max(0,value)*4)*.18})`},
+  width(w){document.documentElement.style.setProperty('--panel-width',w+'px')},
+  hover(point){const el=point.length?document.elementFromPoint(...point):null,hits=[el?.closest('button'),el?.closest('.line')].filter(Boolean);document.querySelectorAll('.hover').forEach(b=>{if(!hits.includes(b))b.classList.remove('hover')});hits.forEach(h=>h.classList.add('hover'))},
+  attachment(file){const b=document.createElement('button');b.className='attachment';b.textContent=file.name;const folder=document.createElement('span');folder.textContent=file.folder;b.append(folder);if(file.img){const img=new Image();img.alt='Preview of '+file.name;img.src=file.img;b.append(img)}b.onclick=()=>{b.classList.toggle('expanded');fit()};$(running?'livefiles':'prepfiles').append(b);fit()},
+  motion(on){document.body.classList.toggle('reduce',on)},
+  nudge(e){$('ntitle').textContent=e.title||'Call';$('nwhen').textContent=[e.when,e.who].filter(Boolean).join(' · ');$('context').value=e.context||'';$('ready').textContent='Get ready';view('nudge');this.prep(true)},
+  prep(quiet){status('Before the call');$('start').disabled=false;if(quiet!==true)view('prep')},   // native js("prep") sends {}, which is truthy
+  demoPrep(r){$('context').value=r.brief;this.prep()},
+  material(text){if(running){files=(files+'\n'+text).slice(0,20000);post({do:'prepare',context:$('brief').value+'\n'+files});toast('Adding file context…');return}files=(files+'\n'+text).slice(0,20000);const n=Math.round(files.length/100)/10;$('filename').textContent=`Files added · ${n}k characters`;show('filechip',true);fit()},
+  prepared(r){if(r.error){toast('Using your notes as written.');return}$('brief').value=r.brief},
+  focus(){if(minimized){post({do:'compact',on:false});return}(running?$('ask'):!$('ended').hidden?($('resume').hidden?$('save'):$('resume')):!$('prep').hidden?$('context'):$('ready')).focus()},
+  listen(){running=true;capturing=false;minimized=false;document.body.classList.remove('compact');while($('prepfiles').firstChild)$('livefiles').append($('prepfiles').firstChild);$('h1').textContent='Meeting Copilot';$('resume').disabled=false;view('live');status('Getting ready');show('notice',true);setTimeout(()=>show('notice',false),8000)},
+  capturing(){if(running){capturing=true;status('Listening · '+time(seconds))}},
+  clock(s){seconds=s;if(running&&capturing)status('Listening · '+time(s))},
+  partial(row){if(!running)return;const was=atEnd(),id=row.mic?'micpartial':'partial';$(id).textContent=(row.mic?'You · ':'')+row.text;show(id,!!row.text);follow(was)},
+  line(row){
+    savedTranscript.push(row);show('nolines',false);lineCount++;const was=atEnd();
+    const d=document.createElement('div');d.className='line'+(row.mic?' mine':'');d.dataset.id=row.id;
+    const t=document.createElement('span');t.className='t';t.textContent=time(row.seconds||0);
+    const text=document.createElement('span');text.className='text';text.textContent=row.text;
+    if(row.mic){const who=document.createElement('b');who.textContent='You · ';text.prepend(who)}
+    d.append(t,text);
+    if(!row.mic){const b=document.createElement('button');b.className='lineask';b.textContent='Answer';b.setAttribute('aria-label','Answer: '+row.text);b.onclick=()=>{post({do:'ask',text:row.text});tab('answers')};d.append(b)}
+    $('lines').append(d);follow(was);
+  },
+  question(row){card(row);$('lines').querySelector(`[data-id="${row.id}"]`)?.classList.add('asked')},
+  thinking(id){const d=cards.get(id),b=d?.querySelector('.answer');d?.querySelector('.reason')?.remove();if(b){b.disabled=true;b.classList.add('thinking');b.textContent='Thinking…'}},
+  answer(r){
+    const d=cards.get(r.id);if(!d||!running)return;const b=d.querySelector('.answer');
+    const reset=()=>{if(b){b.disabled=false;b.classList.remove('thinking');b.textContent='Try again';b.onclick=()=>post({do:'answer',id:r.id,text:d.querySelector('p').textContent})}};
+    const shown=!d.hidden;
+    if(r.kind==='SKIP'&&!shown){d.remove();cards.delete(r.id);$('lines').querySelector(`[data-id="${r.id}"]`)?.classList.remove('asked');return}
+    d.hidden=false;show('empty',false);if($('scroll').hidden&&r.kind!=='SKIP')$('tabs').children[0].classList.add('new');
+    if(r.error){reset();toast(r.error);return}
+    if(r.kind==='SKIP'){reset();setTimeout(()=>{if(touched.has(r.id))return;d.classList.add('gone');setTimeout(()=>{d.remove();cards.delete(r.id);if(!document.querySelector('.question:not([hidden])'))show('empty',true)},300)},4000);return}
+    if(r.kind==='UNSURE'){reset();const reason=document.createElement('p');reason.className='reason';reason.textContent=r.reason||'There isn’t enough meeting context to answer this reliably.';d.querySelector('.reason')?.remove();b.before(reason);b.textContent='Add notes';b.onclick=()=>{retryId=r.id;touched.add(r.id);show('retry',true);tab('notes')};return}
+    d.querySelector('.reason')?.remove();const lines=r.lines||[], res=document.createElement('button');res.className='response';res.setAttribute('aria-label','Copy answer');
+    if(r.general){const g=document.createElement('small');g.textContent='General knowledge';res.append(g)}
+    lines.forEach((line,i)=>{const el=document.createElement(i?'span':'strong');el.textContent=line;res.append(el)});
+    const hint=document.createElement('em');hint.textContent='Copy answer';res.append(hint);
+    res.onclick=()=>{post({do:'copy',text:lines.join('\n')});res.classList.add('copied');hint.textContent='Copied';setTimeout(()=>{res.classList.remove('copied');hint.textContent='Copy answer'},1500)};
+    d.querySelector('.response')?.remove();b?.remove();d.querySelector('.body').append(res);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>post({do:'measured',id:r.id,shownAt:Date.now()/1000,usd:r.usd,secs:r.secs})));
+  },
+  heard(text){if(!voicing)return;$('heard').textContent=text||'Listening…';$('heard').classList.toggle('waiting',!text)},
+  voiceEnd(){if(voicing){voicing=false;show('voicebar',false);show('askform',true)}},
+  stopped(paused=false){this.voiceEnd();running=false;capturing=false;minimized=false;document.body.classList.remove('compact');show('partial',false);show('micpartial',false);for(const b of document.querySelectorAll('.answer.thinking')){b.disabled=false;b.classList.remove('thinking');b.textContent='Answer'};$('h1').textContent=paused?'Call paused':'Call ended';show('resume',paused);$('endtitle').textContent=paused||!saving?'Your meeting':'Keep this meeting?';$('delete').textContent=paused?'Delete meeting':'Don’t save';status(lineCount?`${lineCount} line${lineCount>1?'s':''} heard`:'Nothing heard');this.saving(saving);$('save').textContent=saving?(paused?'Done':'Save'):'Close without saving';$('save').classList.toggle('blue',saving&&!paused);$('save').disabled=false;show('notice',false);view('ended');$('resume').disabled=false;(paused?$('resume'):$('save')).focus()},
+  error(text){toast(text);$('save').disabled=false;$('resume').disabled=false}
+};
+post({do:'ready'});
+// Reuse Atticus's orb; it breathes while listening and holds still otherwise (and under Reduce Motion).
+const E=await import(URL.createObjectURL(new Blob([$('orbsrc').textContent],{type:'text/javascript'}))),S=64,dpr=2,reduced=matchMedia('(prefers-reduced-motion: reduce)'),preset=E.r('breathing',S);
+const orbs=[$('orb'),$('orb2'),$('orb3')].map(cv=>{cv.width=cv.height=S*dpr;return cv.getContext('2d')});let t=0,prev=performance.now();
+(function frame(now){const moving=(running||!$('nudge').hidden)&&!reduced.matches&&!document.body.classList.contains('reduce');t+=Math.min(.05,(now-prev)/1000)*preset.speed*(moving?1:0);prev=now;
+  for(const ctx of orbs){ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,S,S);E.p(ctx,E.M[preset.mode](S,t,preset.opts),true,null)}
+  moving?requestAnimationFrame(frame):setTimeout(()=>requestAnimationFrame(frame),250)})(prev);
+</script></body></html>
