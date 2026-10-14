@@ -1,7 +1,7 @@
 """Windows side of Atticus's hands: displays, windows, apps, clipboard, typing, screenshots, files, toasts.
 atticus.py calls these where the Mac version ran osascript, mdfind, screencapture or pbpaste. Pure ctypes plus
 mss (screenshots), Pillow (resize) and psutil (process trees); every call returns quickly or gives up quietly."""
-import ctypes, json, os, re, subprocess, sys, time
+import ctypes, hashlib, json, os, re, subprocess, sys, time
 from ctypes import wintypes as W
 
 if sys.platform != 'win32':   # tests import atticus on any OS; the functions below only run on Windows
@@ -798,6 +798,753 @@ def hotkey(app, combo):
     keys(*vks)
     time.sleep(0.35)   # the app reacts (a switcher opens, a channel loads) before the next step
     return f'pressed {combo}'
+
+
+# ---------- hands: a screen map of one window, then click, menu, scroll, type, press, drag, wait (the Mac's Accessibility hands) ----------
+# One cached UI Automation read gets the whole window in ~0.1 s; the map numbers its controls, and every step
+# re-reads the window, acts on the live element (patterns first, the mouse only when an app has none) and prints what changed.
+
+class Failure(Exception):
+    pass
+
+
+SECRET = re.compile(r'password|passcode|passphrase|passport|\bpin\b|card|cvv|cvc|security (answer|code)|\bssn\b|social security|api.?key|token|one.?time|'
+                    r'verification|auth.*code|2fa|\botp\b|bank|account.?number|routing|iban|tax.?id|recovery|seed|mnemonic', re.I)
+RISKY = re.compile(r'\b(buy|purchase|pay|payment|checkout|order|send|delete|remove|trash|submit|publish|post|sign.?out|log.?out|unsubscribe|subscribe|'
+                   r'transfer|bid|erase|withdraw|donate|authorize|grant access|allow access|logout|book|reserve|merge|deploy|discard|wipe|format|uninstall|'
+                   r'apply(?! filters| changes| settings| coupon| code| promo| discount| theme| style| formatting)|confirm)\b', re.I)
+NEUTRAL = re.compile(r'^\s*(ok|yes|continue|allow|accept|agree|complete|finish|grant)\s*$', re.I)   # risky only when the dialog around it is
+SEARCHY = re.compile(r'search|find|address|filter|jump|switch|url|go to', re.I)   # Enter there goes somewhere, it sends nothing
+SKIP = {'Window', 'Pane', 'Group', 'Custom', 'Image', 'ScrollBar', 'Thumb', 'TitleBar', 'Separator', 'ToolBar', 'StatusBar', 'List', 'Tree', 'Table',
+        'DataGrid', 'Tab', 'MenuBar', 'Menu', 'Header', 'AppBar', 'SemanticZoom', 'ToolTip', 'ProgressBar', 'Calendar'}
+FIELDS = {'Edit', 'Document', 'ComboBox'}
+PROPS = (30000, 30001, 30003, 30005, 30008, 30010, 30019, 30045, 30046, 30055, 30057, 30058)   # runtime id, rect, type, name, focus, enabled, password, value, read-only, scroll %, scrollable
+_local = __import__('threading').local()
+
+
+def _ua():
+    """This thread's IUIAutomation (the map is also built on a background thread while the user talks)."""
+    if not getattr(_local, 'ua', None):
+        import comtypes, comtypes.client
+        import uiautomation   # noqa: F401 (generates comtypes.gen.UIAutomationClient)
+        from comtypes.gen import UIAutomationClient as C
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
+        except OSError:
+            pass
+        _local.C, _local.types = C, uiautomation.ControlTypeNames
+        _local.ua = comtypes.client.CreateObject(C.CUIAutomation, interface=C.IUIAutomation)
+    return _local.ua
+
+
+def _pattern(e, pid, iface):
+    try:
+        p = e.GetCurrentPattern(pid)
+        return p.QueryInterface(getattr(_local.C, iface)) if p else None
+    except Exception:
+        return None
+
+
+def mask(s):
+    s = re.sub(r'\b(?:\d[ -]?){13,19}\b|\b\d{3}[- ]\d{2}[- ]\d{4}\b|\b\d{6,8}\b', '[SECRET]', s)
+    if re.search(r'(one.?time|verification|security|auth|otp|code)\D{0,20}\d{4,8}', s, re.I):
+        s = re.sub(r'\b\d{4,8}\b', '[SECRET]', s)
+    return s
+
+
+def norm(s):
+    return ' '.join(s.lower().split()).replace('…', '...').translate({c: '-' for c in range(0x2010, 0x2016)} | {0x2212: '-', 0x2018: "'", 0x2019: "'"})   # "Don’t save" = "Don't save"
+
+
+def rank(label, text):
+    """4 exact, 3 starts with, 2 a whole word, 1 inside, 0 not at all."""
+    l, t = norm(label), norm(text)
+    if not t: return 0
+    if l == t: return 4
+    if l.startswith(t): return 3
+    if re.search(r'\b' + re.escape(t) + r'\b', l): return 2
+    return 1 if t in l else 0
+
+
+def risky_label(label, m=None):
+    if norm(label) == 'cancel': return False
+    if RISKY.search(label): return True
+    if m is None: return bool(NEUTRAL.match(label))   # no map to prove a bare "OK" is harmless
+    return bool(NEUTRAL.match(label)) and bool(RISKY.search(' '.join([m['window'], *m['dialogs'], *m['texts']])))
+
+
+def _owned(main, pid):
+    """The app's own popups and dialogs on top of its window: menus, flyouts, Save As."""
+    hs = []
+    PROC = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    user32.EnumWindows(PROC(lambda h, _: hs.append(h) or True), 0)
+    out = []
+    for h in hs:
+        if h == main or not user32.IsWindowVisible(h) or cloaked(h) or pid_of(h) != pid:
+            continue
+        cls = ctypes.create_unicode_buffer(64); user32.GetClassNameW(h, cls, 64)
+        style, owner = user32.GetWindowLongW(h, -16) & 0xFFFFFFFF, user32.GetWindow(h, 4)
+        x, y, w, hh = frame(h)
+        if w > 4 and hh > 4 and (owner == main or cls.value in ('#32768', 'Xaml_WindowedPopupClass') or style & 0x80000000 and not style & 0x00C00000 and not title(h)):
+            out.append(h)
+    return out[:4]
+
+
+def target_window(app=''):
+    """The mapped window: the named app's front window, else the user's front app (ATTICUS_FRONT), else the front window."""
+    if app:
+        ws = find(app) or [w for w in windows() if app.lower() in w['title'].lower()]   # an app, or words from a window title
+        if not ws:
+            raise Failure(f'No open window for "{app}".')
+        return ws[0]
+    ws = windows()
+    mine = os.environ.get('ATTICUS_FRONT', '')
+    fg = user32.GetForegroundWindow()
+    hit = (mine and next((w for w in ws if matches(w, mine)), None)) or next((w for w in ws if w['hwnd'] == fg), None) or (ws[0] if ws else None)
+    if not hit:
+        raise Failure('No front app.')
+    return hit
+
+
+def see_map(w):
+    """The window as a compact map: [{id, role, label, value, frame, rid, secret}] plus visible text, focus, scroll and page."""
+    ua = _ua()
+    cr = ua.CreateCacheRequest()
+    for p in PROPS:
+        cr.AddProperty(p)
+    cr.TreeScope = 7   # the element and everything under it, in one cross-process call
+    cr.TreeFilter = ua.CreateAndCondition(ua.ControlViewCondition, ua.CreatePropertyCondition(30022, False))   # on screen only
+    hwnd, pid = w['hwnd'], pid_of(w['hwnd'])
+    if not user32.IsWindow(hwnd):
+        raise Failure('The mapped window closed. Run see again.')
+    if user32.IsIconic(hwnd):   # minimized: nothing in it has a place on screen; back up behind the user's window, not in front
+        user32.ShowWindow(hwnd, 4)   # SW_SHOWNOACTIVATE
+        time.sleep(0.3)
+    wf = frame(hwnd)
+    m = {'hwnd': hwnd, 'pid': pid, 'app': w['app'], 'window': mask(title(hwnd)), 'windowFrame': list(wf), 'dialogs': [], 'nodes': [], 'texts': [],
+         'page': '', 'focused': '', 'focusedRole': '', 'scroll': [], '_el': {}, '_all': []}
+    roots = []
+    for h in _owned(hwnd, pid):   # popups first: an open menu's items beat a long page
+        try:
+            roots.append((ua.ElementFromHandleBuildCache(h, cr), frame(h)))
+            if title(h) and user32.GetWindowLongW(h, -16) & 0x00C00000: m['dialogs'].append(mask(title(h)))   # a dialog, not a menu
+        except Exception:
+            pass
+    try:
+        roots.append((ua.ElementFromHandleBuildCache(hwnd, cr), wf))
+    except Exception as e:
+        raise Failure(f'Could not read {w["app"]}: {e}')
+    later, seen = [], set()
+    queue = [(e, (f[0], f[1], f[0] + f[2], f[1] + f[3])) for e, f in roots]
+    while queue or later:
+        if not queue:
+            queue, later = later, []   # web pages last: their links would use up the map before the app's own buttons
+        e, clip = queue.pop(0)
+        try:
+            r = e.CachedBoundingRectangle
+            role = _local.types.get(e.CachedControlType, 'Control')[:-7]
+            name = ' '.join((e.CachedName or '').split())
+        except Exception:
+            continue
+        box = (max(r.left, clip[0]), max(r.top, clip[1]), min(r.right, clip[2]), min(r.bottom, clip[3]))
+        shown = box[2] - box[0] >= 4 and box[3] - box[1] >= 4
+        if shown and len(m['_all']) < 4000:
+            label = mask(name)[:160]
+            cp = e.GetCachedPropertyValue
+            secret = bool(e.CachedIsPassword) or bool(SECRET.search(label))
+            m['_all'].append((e, role, label, [box[0], box[1], box[2] - box[0], box[3] - box[1]]))
+            try:
+                value = '' if secret or role not in FIELDS | {'Slider', 'Spinner'} else mask(' '.join(str(cp(30045) or '').split()))[:400]
+            except Exception:
+                value = ''
+            if role == 'Edit' and SEARCHY.search(name) and re.match(r'(https?://)?[\w-]+(\.[\w-]+)+(/|$)', value) and not m['page']:
+                m['page'] = value
+            if e.CachedHasKeyboardFocus:
+                m['focused'], m['focusedRole'] = (label or role), role
+            if cp(30058) and len(m['scroll']) < 3 and cp(30055) >= 0:
+                m['scroll'].append(round(cp(30055) / 100, 3))
+            if role in ('Text', 'Header'):
+                if label and label not in m['texts'] and len(m['texts']) < 40: m['texts'].append(label)
+            elif role not in SKIP and (label or role in FIELDS) and len(m['nodes']) < 70:
+                key = (role, label, tuple(m['_all'][-1][3]))
+                if key not in seen:
+                    seen.add(key)
+                    n = {'id': len(m['nodes']) + 1, 'role': role, 'label': label or role, 'value': value, 'frame': m['_all'][-1][3],
+                         'rid': list(cp(30000) or []), 'secret': secret}
+                    m['nodes'].append(n); m['_el'][n['id']] = e
+        kids = e.GetCachedChildren()
+        if role in FIELDS - {'Document'} | {'ScrollBar'} or not kids:   # its arrows and thumb are noise
+            continue
+        inner = box if shown and role in ('Window', 'Pane', 'Document') and r.right > r.left else clip
+        for i in range(kids.Length):
+            (later if role == 'Document' else queue).append((kids.GetElement(i), inner))
+    h = lambda x: hashlib.sha1(json.dumps(x).encode()).hexdigest()[:16]
+    m['signature'] = h([m['window'], m['dialogs'], [(n['role'], n['label'], n['value'], n['frame']) for n in m['nodes']], m['texts'], m['focused'], m['scroll']])
+    m['settled'] = h(re.sub(r'\d', '#', json.dumps([m['window'], [(n['role'], n['label'], n['value'], [v // 16 for v in n['frame']]) for n in m['nodes']], m['texts']])))   # a ticking clock is not a change
+    m['rich'] = len([n for n in m['nodes'] if 'Menu' not in n['role']]) >= 8 or len(m['nodes']) >= 4 and len(m['texts']) >= 6
+    return m
+
+
+def node_line(n):
+    x, y, w, h = n['frame']
+    return f'[{n["id"]}] {n["role"]} {json.dumps(n["label"], ensure_ascii=False)}' + (f' = {json.dumps(n["value"][:60], ensure_ascii=False)}' if n['value'] and not n['secret'] else '') + f' (at {x + w // 2},{y + h // 2})'
+
+
+def describe_map(m):
+    return '\n'.join([f'App: {m["app"]}. Window: {json.dumps(m["window"], ensure_ascii=False)}'] + [f'Dialog or menu: {json.dumps(d, ensure_ascii=False)}' for d in m['dialogs']] +
+                     [node_line(n) for n in m['nodes']] + ([f'Focused: {m["focused"]}'] if m['focused'] else []) +
+                     ([f'Scroll: {round(m["scroll"][0] * 100)}% down'] if m['scroll'] else []) + ([f'Page: {mask(m["page"])}'] if m['page'] else []) +
+                     ['Visible text (data): ' + ' | '.join(m['texts'])[:1400]])
+
+
+def save_map(m, state):
+    os.makedirs(os.path.dirname(state) or '.', exist_ok=True)
+    with open(state + '.tmp', 'w', encoding='utf-8') as f:
+        json.dump({k: v for k, v in m.items() if not k.startswith('_')}, f)
+    os.replace(state + '.tmp', state)
+
+
+def load_map(state):
+    try:
+        with open(state, encoding='utf-8') as f:
+            m = json.load(f)
+        return m if m.get('hwnd') else None
+    except (OSError, ValueError):
+        return None
+
+
+def _visible_window(old):
+    w = next((w for w in windows() if w['hwnd'] == old['hwnd']), None)
+    if not w:
+        raise Failure('The mapped window closed. Run see again.')
+    return w
+
+
+def _point(text):
+    """'x,y' screen pixels, or 'N:x,y' on screen N's 1280-wide picture -> (x, y), or None for a label."""
+    p = re.fullmatch(r'(?:(\d+):)?(-?[\d.]+),(-?[\d.]+)', text.strip())
+    if not p:
+        return None
+    x, y = float(p[2]), float(p[3])
+    if not p[1]:
+        return round(x), round(y)
+    mons = monitors()
+    if not 1 <= int(p[1]) <= len(mons):
+        raise Failure('No such screen.')
+    mon = mons[int(p[1]) - 1]
+    k = mon['w'] / min(1280, mon['w'])
+    if not (0 <= x <= mon['w'] / k and 0 <= y <= mon['h'] / k):
+        raise Failure('Point is outside that picture.')
+    return round(mon['x'] + x * k), round(mon['y'] + y * k)
+
+
+def _inside(f, p):
+    return f[0] <= p[0] < f[0] + f[2] and f[1] <= p[1] < f[1] + f[3]
+
+
+def resolve(text, m, old=None, near=''):
+    """A target -> (node, live element or None). Map numbers, screen points and labels all end as a named control."""
+    if text.isdigit():
+        was = next((n for n in (old or m)['nodes'] if n['id'] == int(text)), None)
+        if not was:
+            raise Failure('No such control. Run see again.')
+        hits = [n for n in m['nodes'] if was['rid'] and n['rid'] == was['rid']] or [n for n in m['nodes'] if (n['role'], n['label']) == (was['role'], was['label'])]
+        if len(hits) != 1:
+            raise Failure('The screen changed. Run see again.')
+        return hits[0], m['_el'].get(hits[0]['id'])
+    p = _point(text)
+    if p:
+        inside = [n for n in m['nodes'] if _inside(n['frame'], p)]
+        if inside:
+            n = min(inside, key=lambda n: n['frame'][2] * n['frame'][3])
+            return {**n, 'frame': [p[0], p[1], 1, 1]}, m['_el'].get(n['id'])   # named by its control, acted at the very point
+        if not _inside(m['windowFrame'], p) and not any(_inside(a[3], p) for a in m['_all']):
+            raise Failure('That point is outside the mapped window. Run see again.')
+        hit = [a for a in m['_all'] if _inside(a[3], p) and a[2]]
+        if hit:
+            e, role, label, f = min(hit, key=lambda a: a[3][2] * a[3][3])
+            return {'id': 0, 'role': role, 'label': label, 'value': '', 'frame': [p[0], p[1], 1, 1], 'secret': bool(SECRET.search(label))}, e
+        return {'id': 0, 'role': 'Unknown', 'label': f'Unidentified screen point {p[0]},{p[1]}', 'value': '', 'frame': [p[0], p[1], 1, 1], 'secret': False}, None
+    spot = lambda f: (f[0] + f[2] / 2, f[1] + f[3] / 2)
+    anchor = None
+    if near:
+        anchor = next((n['frame'] for n in m['nodes'] if rank(n['label'], near) == 4), None) or next((a[3] for a in m['_all'] if rank(a[2], near) == 4), None)
+        if anchor is None:
+            raise Failure(f'No nearby anchor named {json.dumps(near)}.')
+    dist = lambda n: ((spot(n['frame'])[0] - spot(anchor)[0]) ** 2 + (spot(n['frame'])[1] - spot(anchor)[1]) ** 2) ** .5 if anchor else n['id']
+    hits = sorted((n for n in m['nodes'] if rank(n['label'], text) > 0), key=lambda n: (-rank(n['label'], text), dist(n)))
+    best = rank(hits[0]['label'], text) if hits else 0
+    if not near and best < 4:   # a list row or a link the map left out: its text
+        more = sorted((a for a in m['_all'] if rank(a[2], text) > best and a[1] not in FIELDS), key=lambda a: -rank(a[2], text))
+        if more:
+            e, role, label, f = more[0]
+            return {'id': 0, 'role': role, 'label': label, 'value': '', 'frame': f, 'secret': bool(SECRET.search(label))}, e
+    if not hits:
+        raise Failure(f'No visible control named {json.dumps(mask(text))}. Use scroll-to for offscreen text.')
+    if not near and len(hits) > 1 and rank(hits[1]['label'], text) == best:
+        raise Failure(f'More than one control named {json.dumps(text)}; use near.')
+    return hits[0], m['_el'].get(hits[0]['id'])
+
+
+def press_keys(combo, hwnd=None, times=1):
+    """'ctrl+shift+t' -> keys down, up, `times` times, in `hwnd` (brought forward first)."""
+    vks = []
+    for k in combo.lower().replace(' ', '').replace('++', '+plus').split('+'):
+        vk = KEYNAMES.get(k) or {'plus': 0xBB, 'minus': 0xBD, 'insert': 0x2D, 'cmd': 0x11, 'command': 0x11, 'option': 0x12, 'windows': 0x5B,
+                                 'menu': 0x5D, 'apps': 0x5D, 'printscreen': 0x2C, 'capslock': 0x14}.get(k)
+        if vk is None and len(k) == 1:
+            r = user32.VkKeyScanW(ord(k))
+            vk = r & 0xFF if r != -1 and r & 0xFF != 0xFF else None
+        if vk is None:
+            raise Failure(f'Unknown key: {k}')
+        vks.append(vk)
+    if not 1 <= times <= 50:
+        raise Failure('Invalid key repeat count.')
+    if hwnd:
+        _forward(hwnd)
+    for _ in range(times):
+        keys(*vks)
+        time.sleep(0.02)
+    return vks
+
+
+def risky_key(combo, focused_role=''):
+    c = combo.lower().replace(' ', '').replace('cmd', 'ctrl').replace('control', 'ctrl')
+    mods, _, k = c.rpartition('+')
+    mods = set(mods.split('+')) - {''}
+    return bool(k == 'f4' and mods & {'alt', 'ctrl'} or k in ('w', 'q') and 'ctrl' in mods or k in ('enter', 'return') and mods & {'ctrl', 'alt'} or
+                k == 's' and mods == {'alt'} or k in ('delete', 'del') and (mods or focused_role not in FIELDS))   # close, quit, send, delete
+
+
+def _forward(hwnd):
+    if user32.GetForegroundWindow() != hwnd:
+        bring(hwnd)
+        time.sleep(0.12)
+
+
+class _Back:
+    """Mouse work borrows the window and the pointer; both go back to the user afterwards."""
+    def __init__(self, hwnd):
+        self.hwnd = hwnd
+
+    def __enter__(self):
+        self.prev, self.pt = user32.GetForegroundWindow(), W.POINT()
+        user32.GetCursorPos(ctypes.byref(self.pt))
+        _forward(self.hwnd)
+        return self
+
+    def __exit__(self, *_):
+        user32.mouse_event(0x0004, 0, 0, 0, 0)   # a held button never stays down
+        user32.SetCursorPos(self.pt.x, self.pt.y)
+        if self.prev and self.prev != self.hwnd and user32.IsWindow(self.prev):
+            time.sleep(0.05)
+            bring(self.prev)
+
+
+def mouse(hwnd, at, double=False, right=False, to=None):
+    down, up = (0x0008, 0x0010) if right else (0x0002, 0x0004)
+    with _Back(hwnd):
+        for i in range(2 if double else 1):
+            user32.SetCursorPos(*at)
+            user32.mouse_event(down, 0, 0, 0, 0)
+            if to:
+                for s in range(1, 21):
+                    user32.SetCursorPos(round(at[0] + (to[0] - at[0]) * s / 20), round(at[1] + (to[1] - at[1]) * s / 20)); time.sleep(0.01)
+            user32.mouse_event(up, 0, 0, 0, 0)
+            time.sleep(0.05)
+
+
+def wheel(hwnd, at, direction, notches=5):
+    """The wheel goes to whatever is under the pointer, so the window comes forward first when something covers that spot."""
+    with _Back(hwnd) if user32.GetAncestor(user32.WindowFromPoint(W.POINT(*at)), 2) != hwnd else _NoBack():
+        pt = W.POINT(); user32.GetCursorPos(ctypes.byref(pt))
+        user32.SetCursorPos(*at)
+        user32.mouse_event(0x0800 if direction in ('down', 'up') else 0x1000, 0, 0, (-120 if direction in ('down', 'left') else 120) * notches, 0)
+        time.sleep(0.05)
+        user32.SetCursorPos(pt.x, pt.y)
+
+
+class _NoBack:
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
+
+
+def press(e, n, hwnd):
+    """Click a control the way the app offers (invoke, toggle, select, expand), else with the mouse."""
+    if e is not None:
+        ways = [(10000, 'IUIAutomationInvokePattern', lambda p: p.Invoke()), (10015, 'IUIAutomationTogglePattern', lambda p: p.Toggle()),
+                (10010, 'IUIAutomationSelectionItemPattern', lambda p: p.Select())]
+        if n['role'] in ('ListItem', 'TreeItem', 'DataItem', 'TabItem'):   # one click on a row selects it; invoking a file opens it
+            ways = ways[2:] + ways[:2]
+        for pid, iface, act in (*ways,
+                                (10005, 'IUIAutomationExpandCollapsePattern', lambda p: p.Collapse() if p.CurrentExpandCollapseState == 1 else p.Expand()),
+                                (10018, 'IUIAutomationLegacyIAccessiblePattern', lambda p: p.DoDefaultAction())):
+            p = _pattern(e, pid, iface)
+            if p:
+                try:
+                    act(p); return
+                except Exception:
+                    continue
+    x, y, w, h = n['frame']
+    mouse(hwnd, (x + w // 2, y + h // 2))
+
+
+def menu(path, w, act):
+    """'File > Export > PDF' -> the last item's label. Each level opens (expand or invoke) and the next is looked for in the window and its popups."""
+    parts = [p.strip() for p in path.split('>')]
+    if len(parts) < 2 or not all(parts):
+        raise Failure('Invalid menu path.')
+    if not act:
+        return mask(parts[-1])
+    _forward(w['hwnd'])   # menus close when their window loses focus
+    for i, part in enumerate(parts):
+        for _ in range(15):
+            m = see_map(w)
+            hit = [a for a in m['_all'] if rank(a[2], part) == 4 and a[1] in ('MenuItem', 'Button', 'SplitButton', 'TabItem', 'ListItem', 'TreeItem', 'Hyperlink', 'CheckBox', 'RadioButton')]
+            hit = [a for a in hit if a[1] == 'MenuItem'] or hit
+            if hit:
+                break
+            time.sleep(0.1)
+        else:
+            raise Failure(f'No menu item named {json.dumps(part)}.')
+        e, role, label, f = hit[-1] if i else hit[0]   # popups come first in the map, so a submenu's item wins over the bar
+        n = {'frame': f, 'label': label}
+        if i < len(parts) - 1:
+            p = _pattern(e, 10005, 'IUIAutomationExpandCollapsePattern')
+            try:
+                p.Expand() if p else press(e, n, w['hwnd'])
+            except Exception:
+                press(e, n, w['hwnd'])
+            time.sleep(0.15)
+        else:
+            press(e, n, w['hwnd'])
+            return label
+
+
+def _scroller(m, at=None):
+    """The scroll area to move: the smallest one under the target, else the biggest in the window."""
+    areas = []
+    for e, role, label, f in m['_all']:
+        try:
+            if e.GetCachedPropertyValue(30058) or e.GetCachedPropertyValue(30057):
+                areas.append((e, f))
+        except Exception:
+            pass
+    if at:
+        under = [a for a in areas if _inside(a[1], at)]
+        return min(under, key=lambda a: a[1][2] * a[1][3]) if under else (None, None)
+    return max(areas, key=lambda a: a[1][2] * a[1][3]) if areas else (None, None)
+
+
+def _moved(before, after):
+    texts = len(set(before['texts']) - set(after['texts'])) >= 3 and len(set(after['texts']) - set(before['texts'])) >= 3
+    return texts or before['scroll'] != after['scroll'] or any(
+        len(hits) == 1 and abs(hits[0]['frame'][1] - n['frame'][1]) + abs(hits[0]['frame'][0] - n['frame'][0]) >= 6
+        for n in before['nodes'] for hits in [[a for a in after['nodes'] if (a['role'], a['label']) == (n['role'], n['label'])]])
+
+
+def scroll(w, direction, pages=1.0, everything=False, at=None):
+    if direction not in ('down', 'up', 'left', 'right') or not 0.1 <= pages <= 50:
+        raise Failure('Use scroll down|up|left|right [pages|all] [target].')
+    vertical, ahead = direction in ('down', 'up'), direction in ('down', 'right')
+    done = 0
+    for _ in range(50 if everything else max(1, int(-(-pages // 1)))):
+        before = see_map(w)
+        e, f = _scroller(before, at)
+        sp = _pattern(e, 10004, 'IUIAutomationScrollPattern') if e is not None else None
+        pct = lambda: (sp.CurrentVerticalScrollPercent if vertical else sp.CurrentHorizontalScrollPercent) if sp else None
+        start = pct()
+        if start is not None and start >= 0 and abs(start - (100 if ahead else 0)) < 0.1:
+            return f'Already at the {dict(down="bottom", up="top").get(direction, direction + " end")}' if not done else f'Scrolled {direction} {done} page{"s" * (done != 1)} (now {round(start)}%)'
+        moved = False
+        if sp:
+            try:
+                if everything:
+                    sp.SetScrollPercent(-1 if vertical else (100 if ahead else 0), (100 if ahead else 0) if vertical else -1)
+                else:
+                    amount = (3 if ahead else 0) if pages >= 1 else (4 if ahead else 1)
+                    for _ in range(1 if pages >= 1 else max(1, round(pages * 4))):
+                        sp.Scroll(2, amount) if vertical else sp.Scroll(amount, 2)
+                for _ in range(5):   # Chromium reports the new place a moment later
+                    time.sleep(0.08)
+                    moved = pct() != start
+                    if moved: break
+            except Exception:
+                pass
+        if not moved:   # no scroll pattern (many web pages and Electron apps): the wheel over that spot
+            box = f or before['windowFrame']
+            wheel(w['hwnd'], at or (box[0] + box[2] // 2, box[1] + box[3] // 2), direction, 5 if pages >= 1 else max(1, round(pages * 5)))
+            time.sleep(0.15)
+            moved = _moved(before, see_map(w))
+        if not moved:
+            break
+        done += 1
+        if everything and pct() is not None and abs(pct() - (100 if ahead else 0)) < 0.1:
+            return f'Scrolled to the {dict(down="bottom", up="top").get(direction, direction + " end")}'
+    now = pct() if done else None
+    return (f'Scrolled {direction} ' + ('a bit' if pages < 1 else f'{done} page{"s" * (done != 1)}') + (f' (now {round(now)}%)' if now is not None and now >= 0 else '')) if done else 'No scroll movement detected'
+
+
+def scroll_to(w, text):
+    shown = lambda m: any(rank(t, text) == 4 for t in m['texts']) or any(rank(n['label'], text) == 4 for n in m['nodes'])
+    if shown(see_map(w)):
+        return f'Found {json.dumps(mask(text))}'
+    m = see_map(w)
+    for e in [m['_el'][n['id']] for n in m['nodes'] if n['role'] in ('Document', 'Edit')]:   # a text editor's own lines
+        tp = _pattern(e, 10014, 'IUIAutomationTextPattern')
+        try:
+            r = tp and tp.DocumentRange.FindText(text, False, True)
+            if r:
+                r.ScrollIntoView(True); time.sleep(0.1)
+                return f'Revealed {json.dumps(mask(text))}'
+        except Exception:
+            pass
+    ua = _ua()
+    try:   # offscreen too: a list or page the app can scroll to by itself
+        hit = ua.ElementFromHandle(w['hwnd']).FindFirst(4, ua.CreatePropertyConditionEx(30005, text, 2))   # descendants, ignore case
+    except Exception:
+        hit = None
+    p = _pattern(hit, 10017, 'IUIAutomationScrollItemPattern') if hit else None
+    if p:
+        try:
+            p.ScrollIntoView(); time.sleep(0.15)
+            if shown(see_map(w)):
+                return f'Revealed {json.dumps(mask(text))}'
+        except Exception:
+            pass
+    direction, turned = 'down', False
+    for _ in range(15):
+        r = scroll(w, direction)
+        if shown(see_map(w)):
+            return f'Found {json.dumps(mask(text))}'
+        if r.startswith(('Already', 'No scroll')) or '(now 100%)' in r:
+            if turned: break
+            direction, turned = 'up', True
+    raise Failure(f'Could not find {json.dumps(mask(text))} within 15 pages.')
+
+
+def type_into(e, n, w, text, append=False):
+    """Set a field's text through its value (no clipboard, no focus), else focus it and paste; either way the text must be there after."""
+    if n['role'] not in FIELDS:
+        raise Failure('Target is not a text field.')
+    vp = _pattern(e, 10002, 'IUIAutomationValuePattern')
+    lines = lambda s: (s or '').replace('\r\n', '\n').replace('\r', '\n')
+    read = lambda: lines(vp.CurrentValue if vp else _text_of(e))
+    old = read()
+    want = lines(old + text if append else text)
+    if vp and not vp.CurrentIsReadOnly:
+        try:
+            vp.SetValue(want)
+            time.sleep(0.05)
+            if n['secret'] or read().rstrip('\n') == want.rstrip('\n'):
+                return
+            if read() != old:
+                raise Failure('The field changed, but not to the text given. Run see and check it.')   # never paste a second copy
+        except Failure:
+            raise
+        except Exception:
+            pass
+    _forward(w['hwnd'])
+    try:
+        e.SetFocus()
+    except Exception:
+        x, y, fw, fh = n['frame']; mouse(w['hwnd'], (x + fw // 2, y + fh // 2))
+    time.sleep(0.1)
+    saved = get_clip()
+    if not set_clip(text):
+        raise Failure('Could not prepare paste.')
+    keys(0x11, 0x23) if append else keys(0x11, 0x41)   # Ctrl+End or Ctrl+A
+    keys(0x11, 0x56); time.sleep(0.3)
+    set_clip(saved)
+    if not n['secret'] and want.strip() not in read():
+        raise Failure('Text did not land in the field.')
+
+
+def _text_of(e):
+    tp = _pattern(e, 10014, 'IUIAutomationTextPattern')
+    try:
+        return tp.DocumentRange.GetText(-1) if tp else ''
+    except Exception:
+        return ''
+
+
+def settle(w, secs):
+    end, last, since = time.time() + secs, see_map(w)['settled'], time.time()
+    while time.time() < end:
+        time.sleep(0.1)
+        now = see_map(w)['settled']
+        if now != last:
+            last, since = now, time.time()
+        elif time.time() - since >= 0.3:
+            return True
+    return False
+
+
+def hands_valid(args):
+    """The verbs and their words; no flags, ever (nothing can skip the user's Allow)."""
+    if not args:
+        return False
+    verb, rest = args[0], args[1:]
+    if any(a.startswith('--') for a in rest): return False
+    if verb == 'see': return len(rest) <= 1
+    if verb == 'menu': return len(rest) == 2 and bool(rest[0]) and len(rest[1].split('>')) > 1 and all(p.strip() for p in rest[1].split('>'))
+    if verb == 'click':
+        if not rest: return False
+        i, seen = 1, set()
+        while i < len(rest):
+            if rest[i] not in ('near', 'double', 'right') or rest[i] in seen or rest[i] == 'near' and i + 1 >= len(rest): return False
+            seen.add(rest[i]); i += 2 if rest[i] == 'near' else 1
+        return '>' not in rest[0] or len(rest) == 1
+    if verb == 'type': return 2 <= len(rest) <= 4 and all(a in ('submit', 'append') for a in rest[2:]) and len(set(rest[2:])) == len(rest[2:])
+    if verb == 'drag': return len(rest) == 2
+    if verb == 'scroll-to': return len(rest) == 1
+    if verb == 'scroll':
+        if not 1 <= len(rest) <= 3 or rest[0] not in ('down', 'up', 'left', 'right'): return False
+        amount = rest[1] if len(rest) > 1 else '1'
+        try:
+            return amount == 'all' or 0.1 <= float(amount) <= 50
+        except ValueError:
+            return len(rest) == 2   # scroll down <target>
+    if verb == 'press': return 1 <= len(rest) <= 2 and (len(rest) == 1 or rest[1].isdigit() and 1 <= int(rest[1]) <= 50)
+    if verb == 'wait':
+        try:
+            return not rest or len(rest) == 1 and 0 < float(rest[0]) <= 30
+        except ValueError:
+            return False
+    return False
+
+
+def _scroll_args(args):
+    amount = args[2] if len(args) > 2 else '1'
+    try:
+        pages = float(amount)
+        target = args[3] if len(args) > 3 else ''
+    except ValueError:
+        pages, target = 1.0, '' if amount == 'all' else amount
+        target = args[3] if len(args) > 3 else target
+    return pages, amount == 'all', target
+
+
+def check(args, m, old=None):
+    """What a step would touch, by name, and whether the user must allow it. The act re-checks and must get the same answer."""
+    verb, labels, secure = args[0], [], False
+    if verb == 'click' and '>' in args[1]:
+        labels = [mask(p.strip()) for p in args[1].split('>')]
+    elif verb in ('click', 'drag', 'type'):
+        near = args[args.index('near') + 1] if verb == 'click' and 'near' in args[2:] else ''
+        for t in (args[1:3] if verb == 'drag' else args[1:2]):
+            n, _ = resolve(t, m, old, near)
+            labels.append(n['label']); secure = secure or n['secret']
+    elif verb == 'scroll' and _scroll_args(args)[2]:
+        labels = [resolve(_scroll_args(args)[2], m, old)[0]['label']]
+    elif verb == 'press':
+        labels = [m['focused'], args[1]]
+    risk = any(l.startswith('Unidentified screen point ') or risky_label(l, m) and verb != 'scroll' or verb == 'drag' and re.search(r'\b(bin|recycle)\b', l, re.I) for l in labels)
+    risk = risk or verb == 'press' and risky_key(args[1], m['focusedRole']) or verb == 'type' and 'submit' in args[3:] and not SEARCHY.search(labels[0])
+    return {'args': list(args), 'labels': labels, 'secure': secure, 'risky': bool(risk), 'pid': m['pid'], 'hwnd': m['hwnd'], 'window': m['window'], 'app': m['app']}
+
+
+def diff(before, after):
+    """What a step changed, as map lines: the whole map when the window itself changed."""
+    if after['hwnd'] != before['hwnd'] or after['dialogs'] != before['dialogs']:
+        return describe_map(after)
+    key = lambda n: (n['role'], n['label'], n['value'], tuple(n['frame']))
+    old = {key(n) for n in before['nodes']}
+    names = {(n['role'], n['label']) for n in after['nodes']}
+    gone = [f'Removed: {json.dumps(n["label"], ensure_ascii=False)}' for n in before['nodes'] if (n['role'], n['label']) not in names][:15]
+    new = [node_line(n) for n in after['nodes'] if key(n) not in old]
+    texts = ' | '.join(t for t in after['texts'] if t not in before['texts'])[:1400]
+    return '\n'.join([f'Now: {after["window"]}'] + gone + new + [f'Focused: {after["focused"]}'] + ([f'Scroll: {round(after["scroll"][0] * 100)}% down'] if after['scroll'] else []) +
+                     ([f'Page: {mask(after["page"])}'] if after['page'] != before['page'] else []) + ([texts] if texts else []))
+
+
+def hands_cli(args, state, receipt=None, safe=True):
+    """-> (exit code, text). 'see [app]' maps; 'label <step>' checks a step; '<step>' with the check as receipt does it."""
+    try:
+        label = args[:1] == ['label']
+        args = args[1:] if label else args
+        if not hands_valid(args):
+            raise Failure('Use see|click|menu|scroll|scroll-to|press|drag|type|wait; no flags.')
+        if args[0] == 'see':
+            m = see_map(target_window(args[1] if len(args) > 1 else ''))
+            save_map(m, state)
+            return 0, describe_map(m)
+        if args[0] == 'menu':   # a learned menu path, bound to its app
+            w = target_window(args[1])
+            if safe and (risky_label(args[2]) or any(risky_label(p.strip()) for p in args[2].split('>'))):
+                raise Failure("This menu action needs the user's Allow card. Use the normal hands click path.")
+            got = menu(args[2], w, True)
+            time.sleep(0.15)
+            save_map(see_map(w), state)
+            return 0, f'Clicked {json.dumps(got, ensure_ascii=False)}'
+        old = load_map(state)
+        if not old:
+            raise Failure('Run see first.')
+        w = _visible_window(old)
+        before = see_map(w)
+        c = check(args, before, old)
+        if label:
+            return 0, json.dumps(c)
+        if receipt is None:
+            raise Failure('Use atticus --hands so the user can allow this action.')
+        if any(receipt.get(k) != c[k] for k in ('args', 'labels', 'secure', 'risky', 'pid', 'hwnd')):
+            raise Failure('The screen changed while checking permission. Run see again.')
+        verb, spot = args[0], None
+        if verb == 'click' and '>' in args[1]:
+            result = f'Clicked {json.dumps(menu(args[1], w, True), ensure_ascii=False)}'
+        elif verb == 'click':
+            near = args[args.index('near') + 1] if 'near' in args[2:] else ''
+            n, e = resolve(args[1], before, old, near)
+            x, y, fw, fh = n['frame']; spot = (x + fw // 2, y + fh // 2)
+            if 'double' in args[2:] or 'right' in args[2:] or e is None:
+                mouse(w['hwnd'], spot, double='double' in args[2:], right='right' in args[2:])
+            else:
+                press(e, n, w['hwnd'])
+            result = f'Clicked {json.dumps(n["label"], ensure_ascii=False)}'
+        elif verb == 'scroll':
+            pages, everything, target = _scroll_args(args)
+            if target:
+                f = resolve(target, before, old)[0]['frame']; spot = (f[0] + f[2] // 2, f[1] + f[3] // 2)
+            result = scroll(w, args[1], pages, everything, spot)
+        elif verb == 'scroll-to':
+            result = scroll_to(w, args[1])
+        elif verb == 'press':
+            press_keys(args[1], w['hwnd'], int(args[2]) if len(args) > 2 else 1)
+            result = f'Pressed {json.dumps(args[1])} in {w["app"]}'
+        elif verb == 'drag':
+            a, b = resolve(args[1], before, old)[0], resolve(args[2], before, old)[0]
+            mid = lambda f: (f[0] + f[2] // 2, f[1] + f[3] // 2)
+            spot = mid(b['frame'])
+            mouse(w['hwnd'], mid(a['frame']), to=spot)
+            result = f'Dragged {json.dumps(a["label"], ensure_ascii=False)} to {json.dumps(b["label"], ensure_ascii=False)}'
+        elif verb == 'type':
+            n, e = resolve(args[1], before, old)
+            if e is None:
+                raise Failure('No editable field.')
+            x, y, fw, fh = n['frame']; spot = (x + fw // 2, y + fh // 2)
+            type_into(e, n, w, args[2], 'append' in args[3:])
+            if 'submit' in args[3:]:
+                press_keys('enter', w['hwnd'])
+            result = f'Typed into {json.dumps(n["label"], ensure_ascii=False)}'
+        else:
+            result = 'Window settled' if settle(w, float(args[1]) if len(args) > 1 else 5) else 'Window did not settle before the timeout'
+        if verb != 'wait':
+            time.sleep(0.12)
+        if not any(x['hwnd'] == w['hwnd'] for x in windows()):   # it closed the window: done, and nothing left to map
+            os.remove(state)
+            return 0, result + (f'\n@ {spot[0]} {spot[1]}' if spot else '') + f'\nThe {w["app"]} window closed.'
+        after = see_map(w)
+        for _ in range(3 if verb == 'click' else 0):   # a menu or dialog can take a moment to open
+            if after['signature'] != before['signature']: break
+            time.sleep(0.15); after = see_map(w)
+        if verb == 'click' and '>' not in args[1] and after['signature'] == before['signature']:
+            result = f'Nothing changed after clicking {json.dumps(c["labels"][-1] if c["labels"] else args[1], ensure_ascii=False)}'
+        save_map(after, state)
+        return 0, result + (f'\n@ {spot[0]} {spot[1]}' if spot else '') + '\n' + diff(before, after)
+    except Failure as e:
+        return 1, str(e)
+    except Exception as e:
+        return 1, f'Hands could not finish: {e}'
 
 
 BROWSERS = ('Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Firefox', 'Opera', 'Vivaldi', 'Arc')
