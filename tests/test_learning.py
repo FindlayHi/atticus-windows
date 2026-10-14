@@ -102,6 +102,14 @@ class LearningTests(unittest.TestCase):
             atticus.remember_workflow('do thing', f'Done. [workflow do thing | a] [replay {bad}]', True, ['x'])
             self.assertNotIn('do thing', atticus.skills())
 
+    def test_searches_on_other_sites_go_to_the_ai(self):
+        with patch.object(atticus.os, 'startfile', create=True) as opened:
+            self.assertIsNone(atticus.fast('Search for a pancake recipe on allrecipes'))
+            self.assertIsNone(atticus.fast('search for a desk lamp at ikea.com'))
+            opened.assert_not_called()
+            self.assertEqual(atticus.fast('search for lamps on amazon'), 'Searched lamps on Amazon.')
+            self.assertEqual(atticus.fast('search for weather in toronto'), 'Searched weather in toronto.')
+
     def test_history_finds_past_asks_by_words_or_date(self):
         with open(self.root / 'log.jsonl', 'w') as f:
             f.write(json.dumps({'at': '2026-10-10 09:00:00', 'task': 'find the lamp link', 'reply': 'https://example.com/lamp'}) + '\n')

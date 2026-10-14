@@ -1053,6 +1053,7 @@ def fast(text):
             return r
     m = re.fullmatch(r'(?:search(?: up)?|google|look up)(?: (?:on |in )?(google|youtube|spotify|amazon|the web|online))?(?: for)? (.+?)(?: (?:on|in) (google|chrome|edge|youtube|spotify|amazon|the web))?', t)
     if m and MORE.search(m[2]): m = None   # "search amazon for X and find the best one" is two steps: the AI does both
+    if m and re.search(r'\b(?:on|at) (?!google|youtube|spotify|amazon|the web|online)[\w.-]+$', m[2]): m = None   # "on allrecipes": that site's own search page, which the AI opens
     if m and not re.search(r'\b(this|that|it|these|my)\b', m[2]) and not re.search(r'\b(for|on|in|the|a|an|and|to|of|some)$', m[2]):   # "search this" needs the screen; "search amazon for" was cut off mid-sentence: AI
         site, q = m[1] or m[3], urllib.parse.quote(m[2])
         target = {'youtube': f'https://www.youtube.com/results?search_query={q}', 'spotify': f'spotify:search:{q}',
