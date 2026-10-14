@@ -1058,9 +1058,8 @@ def fast(text):
         site, q = m[1] or m[3], urllib.parse.quote(m[2])
         target = {'youtube': f'https://www.youtube.com/results?search_query={q}', 'spotify': f'spotify:search:{q}',
                   'amazon': f'https://www.amazon.com/s?k={q}'}.get(site, f'https://www.google.com/search?q={q}')
-        free_focus()
-        os.startfile(target)
-        fast.cmds = [f'{SHOW} {shlex.quote(target)}']
+        show(target, bg=True)   # behind the user's app, in the mini screen; a click on it brings the page forward
+        fast.cmds = [f'{SHOW} --bg {shlex.quote(target)}']
         return f'Searched {m[2]}' + (f' on {site.title()}.' if site in ('youtube', 'spotify', 'amazon') else '.')
     m = re.fullmatch(r'play (?:my |the )?(?:spotify )?(?:playlist )?(?:called |named )?(.+?)( playlist)?( on spotify)?', t)
     if m and not DEICTIC.search(m[1]) and not MORE.search(m[1]):   # "play X" alone may mean a video: only the user's playlist here, anything else goes to the AI (which uses --play)

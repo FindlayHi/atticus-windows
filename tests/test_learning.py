@@ -103,12 +103,13 @@ class LearningTests(unittest.TestCase):
             self.assertNotIn('do thing', atticus.skills())
 
     def test_searches_on_other_sites_go_to_the_ai(self):
-        with patch.object(atticus.os, 'startfile', create=True) as opened:
+        with patch.object(atticus, 'show') as opened:
             self.assertIsNone(atticus.fast('Search for a pancake recipe on allrecipes'))
             self.assertIsNone(atticus.fast('search for a desk lamp at ikea.com'))
             opened.assert_not_called()
             self.assertEqual(atticus.fast('search for lamps on amazon'), 'Searched lamps on Amazon.')
             self.assertEqual(atticus.fast('search for weather in toronto'), 'Searched weather in toronto.')
+        self.assertTrue(all(c.kwargs.get('bg') for c in opened.call_args_list))   # behind the user's app, never over it
 
     def test_history_finds_past_asks_by_words_or_date(self):
         with open(self.root / 'log.jsonl', 'w') as f:

@@ -1,5 +1,7 @@
 // The talk shortcut (any key plus modifiers, held or pressed), Esc while the box is up, clicks outside the box,
-// and which app the user is in. Low-level hooks run on the UI thread's message loop; handlers stay short.
+// and which app the user is in. The keyboard and mouse hooks run on their own thread, which does nothing else: Windows makes
+// every key and click on the PC wait for a low-level hook, so a busy UI thread (WebView2, the mini screen) must never be that thread.
+// Their handlers only decide swallow-or-pass and post the rest to the UI thread.
 using System.Runtime.InteropServices;
 using static Atticus.Native;
 
@@ -23,11 +25,20 @@ static class Hooks
     public static Func<IntPtr, bool> Guard;  // a window came forward by itself while Atticus works: true = it was put back
     static bool down;
 
+    [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
+    [DllImport("user32")] static extern int GetMessage(out MSG m, IntPtr hwnd, uint min, uint max);
+    [DllImport("user32")] static extern bool TranslateMessage(ref MSG m);
+    [DllImport("user32")] static extern IntPtr DispatchMessage(ref MSG m);
+
     public static void Install()
     {
-        var mod = GetModuleHandle(null);
-        kb = SetWindowsHookEx(WH_KEYBOARD_LL, kbProc, mod, 0);
-        mouse = SetWindowsHookEx(WH_MOUSE_LL, mouseProc, mod, 0);
+        new Thread(() =>
+        {
+            var mod = GetModuleHandle(null);
+            kb = SetWindowsHookEx(WH_KEYBOARD_LL, kbProc, mod, 0);
+            mouse = SetWindowsHookEx(WH_MOUSE_LL, mouseProc, mod, 0);
+            while (GetMessage(out var m, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref m); DispatchMessage(ref m); }   // the hooks need a message loop
+        }) { IsBackground = true, Name = "input hooks", Priority = ThreadPriority.AboveNormal }.Start();
         fg = SetWinEventHook(3, 3, IntPtr.Zero, fgProc, 0, 0, 0);   // EVENT_SYSTEM_FOREGROUND, out of context
         OnForeground(IntPtr.Zero, 3, GetForegroundWindow(), 0, 0, 0, 0);
     }
@@ -72,12 +83,12 @@ static class Hooks
         {
             if (press && Mods() == mods)
             {
-                if (!down) { down = true; if ((mods & 1) != 0 || (mods & 8) != 0) Tap(0xE8); Shortcut?.Invoke(true); }   // 0xE8: Alt/Win alone would open a menu
+                if (!down) { down = true; if ((mods & 1) != 0 || (mods & 8) != 0) Tap(0xE8); Program.Post(() => Shortcut?.Invoke(true)); }   // 0xE8: Alt/Win alone would open a menu
                 return 1;   // swallowed, key repeat too
             }
-            if (up && down) { down = false; Shortcut?.Invoke(false); return 1; }
+            if (up && down) { down = false; Program.Post(() => Shortcut?.Invoke(false)); return 1; }
         }
-        if (press && k.vkCode == VK_ESCAPE && Mods() == 0 && EscWanted?.Invoke() == true) { Escape?.Invoke(); return 1; }
+        if (press && k.vkCode == VK_ESCAPE && Mods() == 0 && EscWanted?.Invoke() == true) { Program.Post(() => Escape?.Invoke()); return 1; }
         return CallNextHookEx(kb, code, w, l);
     }
 
@@ -87,7 +98,7 @@ static class Hooks
         {
             var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(l);
             if ((m.flags & 1) == 0) LastInput = DateTime.Now;   // LLMHF_INJECTED: a helper's click, not the user's
-            ClickAt?.Invoke(m.pt.X, m.pt.Y);
+            Program.Post(() => ClickAt?.Invoke(m.pt.X, m.pt.Y));
         }
         return CallNextHookEx(mouse, code, w, l);
     }

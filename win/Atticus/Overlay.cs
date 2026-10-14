@@ -99,7 +99,7 @@ addEventListener('DOMContentLoaded', () => {
         web = await Web.Load(this, "ui.html", OnMessage, true, PointerScript);
         mini = new MiniScreen(this) { Publish = v => js("mini", v) };
         Hooks.Guard = Guard;
-        Hooks.EscWanted = () => Visible && Opacity > 0;
+        Hooks.EscWanted = () => Visible && Opacity > 0;   // asked from the hooks' thread: both read plain fields, no window calls
         Hooks.Escape = Escape;
         Hooks.Shortcut = Shortcut;
         Hooks.ClickAt = (x, y) =>   // click anywhere else closes the box once the answer is up
