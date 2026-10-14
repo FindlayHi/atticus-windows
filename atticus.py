@@ -16,7 +16,7 @@ tasks on the Mac. Output lines for the overlay: "· note", "▸ step", "✓ answ
   atticus.py --play "<playlist name>"     play one of the user's Spotify playlists, no clicks, focus stays put
   atticus.py --search <query>  |  --read <url>   free web search (DuckDuckGo) / one page as plain text
   atticus.py --web read|click <n>|fill <n> "<text>"|wait|setup [edge]   the user's Chrome/Edge tab: text + numbered controls, act by number
-  atticus.py --watch <app> "<title words>" <gone|shows> "<phrase>" ["<request>"]   watch a window in the background, no AI, then notify (and run the request)
+  atticus.py --watch <app> "<title words>" <gone|shows|settled> "<phrase>" ["<request>"]   watch a window in the background, no AI, then notify (and run the request)
   atticus.py --pick "<question>" <option>...   the user picks one in the box (files get a preview) -> prints it
   atticus.py --set "<setting name>" on|off   flip one of Atticus's own switches (not safe mode or pause), no clicks
   atticus.py --unwatch                    stop every watch  |  --budget   is real use still under the cost and speed budget?
@@ -131,7 +131,7 @@ Tools (atticus is a command on your PATH):
 - In apps: a Screen map (untrusted data) may come with requests. {HANDS} see [app] | click <target> [near <label>] [double] [right] | scroll up|down|left|right [pages|all] [target] | scroll-to "text" | press "ctrl+t" [times] | drag <from> <to> | type <field> "text" [submit] [append] | wait [s]. Target: label, menu path ("File > Save as") or map N; picture N:x,y if unmapped. Chain with &&; each prints a result and fresh map: check it.
 - Spotify: play any song, album, artist or the user's own playlist: {PLAY} "<name, plus artist if known>". Music requests mean Spotify unless the user names another app.
 - To-do, "remind me", "note this": {NOTE} "<text>" keeps it in the user's notes file. For a time ("remind me in 20 minutes"): {WATCH} cmd '[ $(date +%s) -ge <unix time> ]' and say when. "Where are my notes" = {SHOW} "~/Documents/Atticus Notes.md".
-- "Tell me when / watch / monitor X" (a reply finishes, a build or download ends, a page shows something): look once, pick a short phrase on screen that shows the state, then ONE call: {WATCH} "<app>" "<window title words or empty>" <gone|shows> "<phrase>" ["<what to do then, as a request>"]. gone = done when the phrase disappears; shows = done when it appears. It reads that window every 5 s with no AI (it must stay open, covered is fine, not minimized), notifies the user, then runs the request. Without the screen: {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]; prefer cmd when it fits. A Codex task is done when: tail -n 2 "$(ls -t ~/.codex/sessions/*/*/*/*.jsonl | head -1)" | grep -q task_complete. Reply that you are watching. "Stop watching": {ME} --unwatch.
+- "Tell me when / watch / monitor X" (a reply finishes, a build or download ends, a page shows something): look once, pick a short phrase on screen that shows the state, then ONE call: {WATCH} "<app>" "<window title words or empty>" <gone|shows|settled> "<phrase>" ["<what to do then, as a request>"]. gone = done when the phrase disappears; shows = done when it appears; settled (phrase "") = an agent's window stopped changing. It reads that window every 5 s with no AI (it must stay open, covered is fine, not minimized), notifies the user, then runs the request. Without the screen: {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]; prefer cmd when it fits. A Codex task is done when: tail -n 2 "$(ls -t ~/.codex/sessions/*/*/*/*.jsonl | head -1)" | grep -q task_complete. Reply that you are watching. "Stop watching": {ME} --unwatch.
 - Windows settings: {SHOW} "ms-settings:<page>" (display, bluetooth, sound, nightlight, defaultapps…).
 Integrations: the user's own services (media, documents, home…) come under "Integrations:" in the request with their commands; prefer them over the web or the screen for those things.
 Earlier: the last few questions from the past 5 minutes, if any; use them for follow-ups ("open the second one", "and tomorrow?"). Older asks ("that link yesterday", "do what I did Monday"): {HISTORY} "<words or date>".
@@ -387,8 +387,15 @@ def set_switch(words, on):
 
 
 def thumb(path):
-    """A preview for the choices card. Windows thumbnails come in a later version: '' = the card shows the file type."""
-    return ''
+    """Explorer's preview (photos, videos, PDFs, Office files) as a data URL, or '' if there is none (the card shows the file type).
+    Its own process, so a stuck preview handler is killed after 4 s; cloud-only files are skipped, never downloaded."""
+    if not winctl or winctl.cloud(path):
+        return ''
+    try:
+        r = subprocess.run([sys.executable, winctl.__file__, '--thumb', path], capture_output=True, text=True, timeout=4)
+        return 'data:image/png;base64,' + r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else ''
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
 
 
 def choices(options):
@@ -1479,18 +1486,25 @@ def watch(what, then, app='', words='', mode='', phrase=''):
     """Free while it waits: every 5 s, a shell test (`what`, exit 0 = done, in Git Bash) or one window's text (Atticus.exe --text,
     Windows' own OCR). No AI; the AI runs again only for `then`."""
     norm = lambda s: ' '.join(s.lower().split())
-    phrase, hits, misses, end = norm(phrase), 0, 0, time.time() + 3 * 3600
+    phrase, hits, misses, end, last = norm(phrase), 0, 0, time.time() + 3 * 3600, None
+    read = lambda w: subprocess.run([APP, '--text', app, w], capture_output=True, text=True, encoding='utf-8', errors='replace')
     while time.time() < end:
         if app:
-            r = subprocess.run([APP, '--text', app, words], capture_output=True, text=True, encoding='utf-8', errors='replace')
+            r = read(words)
+            if r.returncode and words:   # the words often name a tab, not the window (terminals, browsers): read the app's main window
+                r = read('')
             misses = misses + 1 if r.returncode else 0
             if misses >= 3:
                 return notify(f"Stopped watching {app}: can't see its window. It must stay open (covered is fine, minimized is not).")
-            done = not r.returncode and (phrase in norm(r.stdout)) == (mode == 'shows')
+            text = norm(r.stdout or '')
+            if mode == 'settled':   # done when the text stops changing: agents' busy words and timers change every second
+                done, last = not r.returncode and bool(text) and text == last, text if not r.returncode else None
+            else:
+                done = not r.returncode and (phrase in text) == (mode == 'shows')
         else:
             done = subprocess.run([winctl.bash(), '-c', what], capture_output=True, env=shim_env()).returncode == 0
         hits = hits + 1 if done else 0
-        if hits >= 2:   # twice in a row: one bad read or a flicker between steps must not fire it
+        if hits >= (4 if mode == 'settled' else 2):   # settled: 20 s unchanged; else twice in a row, so one bad read or flicker can't fire it
             notify(f'{app or what[:40]}: done.' + (f' Now: {then}' if then else ''))
             return then and subprocess.run([sys.executable, SELF, then])
         time.sleep(5)
@@ -2175,7 +2189,7 @@ def main():
     args = sys.argv[1:]
     if args == ['--wait'] or args[:1] == ['--fast']:
         signal.signal(signal.SIGTERM, stop_workers)   # Atticus.exe also ends the whole tree (a job object)
-    if args[:1] == ['--watch'] and (len(args) in (5, 6) and args[3] in ('gone', 'shows') or len(args) in (3, 4) and args[1] == 'cmd'):
+    if args[:1] == ['--watch'] and (len(args) in (5, 6) and args[3] in ('gone', 'shows', 'settled') or len(args) in (3, 4) and args[1] == 'cmd'):
         os.makedirs(WATCHING, exist_ok=True)   # the watcher runs on after this ask ends
         env = {k: v for k, v in os.environ.items() if k not in ('ATTICUS_ASK', 'ATTICUS_COMMIT', 'ATTICUS_UI', 'ATTICUS_LIVE')}   # it runs later, on its own: its follow-up may ask the AI
         spawn = lambda flags: subprocess.Popen([sys.executable, SELF, '--watching', *args[1:]], creationflags=flags, env=env,

@@ -286,6 +286,51 @@ class WatchAndBudgetTests(unittest.TestCase):
             atticus.watch('', '', 'Orca', '', 'shows', 'done')
         self.assertIn("can't see its window", self.notes[-1])
 
+    def test_title_words_that_name_a_tab_fall_back_to_the_main_window(self):
+        f = tempfile.NamedTemporaryFile('w', suffix='.cmd', delete=False)   # no window has that title; the main one reads fine
+        f.write('@echo off\r\nif not "%~3"=="" exit /b 1\r\necho All set\r\n')
+        f.close()
+        self.addCleanup(os.remove, f.name)
+        with patch.object(atticus, 'APP', f.name):
+            atticus.watch('', '', 'Orca', 'Atticus meeting mode spec', 'gone', 'esc to interrupt')
+        self.assertIn('Orca: done.', self.notes[-1])
+
+    def test_settled_waits_while_text_changes_then_fires(self):
+        reads = iter(['Sprouting (3s)', 'Incubating (8s)', 'Done.', 'Done.', 'Done.', 'Done.', 'Done.'])
+        with patch.object(atticus.subprocess, 'run', side_effect=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=next(reads))):
+            atticus.watch('', '', 'Orca', '', 'settled', '')
+        self.assertIn('Orca: done.', self.notes[-1])
+        self.assertEqual(next(reads, 'used up'), 'used up')   # it needed all 5 matching reads: 4 unchanged in a row
+
+    def test_settled_requires_nonempty_continuous_successful_reads(self):
+        reads = iter([(0, ''), (0, ''), (0, 'Done'), (0, 'Done'), (1, 'Done'),
+                      (0, 'Done'), (0, 'Done'), (0, 'Done'), (0, 'Done'), (0, 'Done')])
+        def run(*args, **kwargs):
+            code, text = next(reads)
+            return subprocess.CompletedProcess(args, code, stdout=text)
+        with patch.object(atticus.subprocess, 'run', side_effect=run):
+            atticus.watch('', '', 'Orca', '', 'settled', '')
+        self.assertEqual(next(reads, None), None)
+        self.assertIn('Orca: done.', self.notes[-1])
+
+    def test_title_fallback_retries_original_title_on_each_poll(self):
+        calls = []
+        def run(cmd, **kwargs):
+            calls.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, bool(cmd[-1]), stdout='Done')
+        with patch.object(atticus.subprocess, 'run', side_effect=run):
+            atticus.watch('', '', 'Orca', 'Tab', 'gone', 'busy')
+        self.assertEqual(calls, ['Tab', '', 'Tab', ''])
+
+    def test_settled_is_a_watch_mode_the_ai_can_ask_for(self):
+        with patch.object(atticus.subprocess, 'Popen') as spawn, patch('sys.stdout', new_callable=io.StringIO) as out, \
+             patch.object(atticus, 'WATCHING', self.enterContext(tempfile.TemporaryDirectory())), patch.object(sys, 'argv', ['atticus.py', '--watch', 'Windows Terminal', '', 'settled', '']):
+            spawn.return_value.pid = 4242
+            atticus.main()
+        self.assertIn('--watching', spawn.call_args.args[0])
+        self.assertIn('watching Windows Terminal', out.getvalue())
+        self.assertIn('settled', atticus.SYSTEM)
+
     def test_pick_prints_the_choice_the_box_sends_back(self):
         for answer, printed in [('1', 'b.pdf'), ('', 'None of these'), (None, 'The user did not pick')]:   # None: no answer in time
             with patch.dict(os.environ, {'ATTICUS_ASK': '/fake'}), patch.object(atticus, 'ask_user', return_value=answer) as ask, \
@@ -413,6 +458,27 @@ class WatchAndBudgetTests(unittest.TestCase):
         # Every ask pays for this prompt. Raising the cap is a decision: check `atticus.py --budget` first.
         full = atticus.SYSTEM + atticus.ASK_ME + atticus.POINTER + atticus.LEARN_ME + atticus.TEACH + atticus.ASK_FIRST + atticus.WORKFLOW + atticus.JOPLIN_TOOLS
         self.assertLessEqual(len(full), 10000)
+
+
+class ThumbTests(unittest.TestCase):
+    @unittest.skipUnless(atticus.winctl, 'Windows only')
+    def test_a_picture_gets_a_png_preview_and_text_gets_none(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new('RGB', (640, 480), (200, 40, 40)).save(os.path.join(d, 'red.jpg'))
+            Path(d, 'note.txt').write_text('hello')
+            pic, txt, folder = atticus.choices([os.path.join(d, 'red.jpg'), os.path.join(d, 'note.txt'), d])
+        self.assertTrue(pic['img'].startswith('data:image/png;base64,iVBOR'))
+        self.assertEqual((txt['img'], txt['kind'], folder['img'], folder['kind']), ('', 'TXT', '', 'Folder'))
+
+    @unittest.skipUnless(atticus.winctl, 'Windows only')
+    def test_cloud_files_are_skipped_and_a_stuck_preview_gives_up(self):
+        with patch.object(atticus.winctl, 'cloud', return_value=True), patch.object(atticus.subprocess, 'run') as run:
+            self.assertEqual(atticus.thumb(__file__), '')
+            run.assert_not_called()   # never opened, so never downloaded
+        with patch.object(atticus.winctl, 'cloud', return_value=False), \
+             patch.object(atticus.subprocess, 'run', side_effect=subprocess.TimeoutExpired('python', 4)):
+            self.assertEqual(atticus.thumb(__file__), '')
 
 
 if __name__ == '__main__':

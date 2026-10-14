@@ -32,7 +32,7 @@
 |---|---|
 | *"Code on my big screen, Chrome and Terminal on the laptop."* | Arranges three windows across two displays. |
 | *"Open Spotify."* · *"Notepad on the left."* | Runs instantly, with no AI at all. |
-| *"Find my notes about the Tokyo trip."* | Searches your files by what's inside them and opens the match. |
+| *"Find my notes about the Tokyo trip."* | Searches your files by what's inside them and opens the match. If several fit, you pick from previews. |
 | *"What's wrong with this code?"* | Looks at your screen and answers in a line. |
 | *"Reply: sounds good, see you at 7."* | Types it into the app you're in. It never sends. |
 | *"Make this friendlier."* (with text highlighted) | Rewrites it. You review, then Replace, Try again or Copy. |
@@ -126,7 +126,7 @@ It reads with Windows' UI Automation the moment the shortcut goes down (classic 
 
 ## Watch for me
 
-Say "tell me when the download is done" or "watch this page until it says shipped". Atticus sets it up once, then checks every 5 seconds on your PC with no AI, so waiting is free. It reads the window with Windows' own text recognition, so the window must stay open (covered is fine, minimized is not). When it fires you get a notification, and it runs a follow-up if you asked for one. Coding agents like Codex are watched through their own log, with no screen at all. Say "stop watching" to cancel.
+Say "tell me when the download is done" or "watch this page until it says shipped". Atticus sets it up once, then checks every 5 seconds on your PC with no AI, so waiting is free. It reads the window with Windows' own text recognition, so the window must stay open (covered is fine, minimized is not). When it fires you get a notification, and it runs a follow-up if you asked for one. Coding agents like Codex are watched through their own log, with no screen at all. Say "tell me when Claude Code finishes" and Atticus waits for that terminal window to stop changing. Say "stop watching" to cancel.
 
 ## Budget
 
