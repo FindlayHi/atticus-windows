@@ -120,6 +120,8 @@ sealed class SettingsWindow : PageWindow
             case "resetHotkey": Prefs.Set("hotkeyCode", 0x20); Prefs.Set("hotkeyMods", 3); Prefs.Set("hotkeyLabel", "Ctrl+Alt+Space"); Push(); break;
             case "preview": if (S("sound") is { } n) Sound.Play(n, Prefs.Num("volume") * 2); break;
             case "setup": Program.Onboarding.Open(); break;
+            case "webChrome": Helper("--web", "setup", "Google Chrome"); break;   // opens the browser's own remote-debugging switch
+            case "webEdge": Helper("--web", "setup", "Microsoft Edge"); break;
             case "openLog": if (File.Exists(Paths.Log)) Web.Open(Paths.Log); break;
             case "clearRecent": try { File.Delete(Paths.Recent); } catch { } Program.Box.lastDone = DateTime.MinValue; break;
             case "me": if (S("what") is { } w && S("text") is { } t) Helper("--me", w, t); break;

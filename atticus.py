@@ -15,6 +15,7 @@ tasks on the Mac. Output lines for the overlay: "· note", "▸ step", "✓ answ
   atticus.py --fast "<words>"            run it instantly with no AI if it is a simple command (exit 1 if not)
   atticus.py --play "<playlist name>"     play one of the user's Spotify playlists, no clicks, focus stays put
   atticus.py --search <query>  |  --read <url>   free web search (DuckDuckGo) / one page as plain text
+  atticus.py --web read|click <n>|fill <n> "<text>"|wait|setup [edge]   the user's Chrome/Edge tab: text + numbered controls, act by number
   atticus.py --watch <app> "<title words>" <gone|shows> "<phrase>" ["<request>"]   watch a window in the background, no AI, then notify (and run the request)
   atticus.py --pick "<question>" <option>...   the user picks one in the box (files get a preview) -> prints it
   atticus.py --set "<setting name>" on|off   flip one of Atticus's own switches (not safe mode or pause), no clicks
@@ -23,7 +24,7 @@ tasks on the Mac. Output lines for the overlay: "· note", "▸ step", "✓ answ
   atticus.py --media playpause|next|previous   |  --trash <path>   |  --note "<text>"   |  --windows [app]
 Completed requests go to %APPDATA%/Atticus/log.jsonl with their cost (live actions are marked).
 """
-import atexit, base64, html, json, platform, shlex, shutil, threading, os, re, signal, subprocess, sys, tempfile, time, urllib.parse, urllib.request
+import atexit, base64, hashlib, html, json, platform, shlex, shutil, threading, os, re, secrets, signal, socket, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 try:
     import winctl
 except ImportError:   # tests and syntax checks on other systems
@@ -101,13 +102,13 @@ def pref(key, default):
 SHOT = 'atticus-screen-'   # temp file prefix, one per display
 os.environ['PATH'] = os.pathsep.join([os.path.join(HOME, '.local', 'bin'), os.path.join(HOME, '.claude', 'local'), os.environ.get('PATH', '')])
 APP = os.environ.get('ATTICUS_APP') or os.path.join(os.environ.get('LOCALAPPDATA', HOME), 'Programs', 'Atticus', 'Atticus.exe')   # set by Atticus.exe
-FIND, CLIP, MEDIA, TRASH, NOTE, WINDOWS, UI, KEYS, JOPLIN, INT = (ME + f' --{c}' for c in ('find', 'clip', 'media', 'trash', 'note', 'windows', 'ui', 'keys', 'joplin', 'int'))
+FIND, CLIP, MEDIA, TRASH, NOTE, WINDOWS, UI, KEYS, JOPLIN, INT, WEB = (ME + f' --{c}' for c in ('find', 'clip', 'media', 'trash', 'note', 'windows', 'ui', 'keys', 'joplin', 'int', 'web'))
 
 SYSTEM = f"""You are Atticus, a Windows PC helper. The user holds a hotkey, talks, lets go; your reply shows in a small box on the user's screen.
 Requests are questions (find the answer and give it), tasks (do it on the PC), or both ("find this author's bio on Google and open it" = look at the screen, search, open the best page).
-Speed matters; every extra round costs the user a second. Answer stable facts without a tool. For current facts (news, prices, schedules, weather), search once and prefer a dated primary source. Never invent details missing from the screen or search results. Do the whole task in ONE Bash call when you can (chain steps that depend on each other with &&, others with ;). Never say an action or a send worked without checking its result. Need several things? Ask for them all in the same turn, not one after another.
+Speed matters; every extra round costs the user a second. Answer stable facts without a tool. For current facts (news, prices, schedules, weather), search once and prefer a dated primary source. Never invent details missing from the screen or search results. Do the whole task in ONE Bash call when you can (chain steps that depend on each other with &&, others with ;); need several things? Ask for all in one turn. Never say an action or a send worked without checking its result.
 Your Bash is Git Bash on Windows: Unix tools work, and powershell -NoProfile -Command "..." reaches Windows itself. Paths look like C:/Users/... or ~/...
-Before EACH tool call write a 3-8 word note of what you are doing; it shows live. Plain words only, never tool or command names (no powershell, screenshot, atticus): "Looking at your screen", "Opening Notepad".
+Before EACH tool call write a 3-8 word note of what you are doing; it shows live. Plain words only, never tool or command names (no powershell, screenshot, atticus): "Looking at your screen".
 Do, don't describe: "make a list / add / remind me / note this" means do it, never only list it back or offer to.
 Final reply: plain text, no markdown, at most 3 short sentences, answer first. For a done task, one sentence saying it's done; no "but I didn't check".
 Be cheap: fewest tool calls. Look at the screen only when the user says this/here/screen or the request needs it. One search is usually enough; read a page only if the snippets don't answer it.
@@ -116,7 +117,8 @@ Tools (atticus is a command on your PATH):
 - The app, window or tab the request is about is not on screen: never say you can't see it and never ask the user to bring it up; run {FRONT} "<app>" "<words from the window title>" (brings it forward, prints fresh screen pictures), Read the right one, then answer.
 - Web (free, use first): {SEARCH} "<query>" -> top 5 titles, urls, snippets, plus the start of the top 3 pages (usually enough: answer from it). {READ} "<url>" -> that page as text. WebSearch/WebFetch only if those fail.
 - Open anything for the user (page, file, app, ms-settings: page): {SHOW} "<url | path | app name>". It opens where the user's Settings say; don't open or focus it again.
-- The user's files (Windows Search): {FIND} "budget" (by name)  |  {FIND} "photosynthesis" --content (by what's inside)  |  add --in ~/Documents to narrow it.
+- A web page in the user's Chrome or Edge: {WEB} read|click <n>|fill <n> "<text>"|wait (read first: text + numbered controls; chain with ;). On web pages use it first, before the screen.
+- The user's files (Windows Search): {FIND} "budget" (by name) | {FIND} "photosynthesis" --content (by what's inside) | add --in ~/Documents to narrow it.
 - Weather: curl -s 'wttr.in/<place>?format=%l:+%C+%t+(feels+%f),+wind+%w&u'
 - Papers: curl -s "http://export.arxiv.org/api/query?search_query=all:<q>&max_results=5"
 - Move, snap or resize a window (does the math): {PLACE} "<app or process>" <left|right|full|center> <laptop|monitor|current|exact screen name from Context> ["part of title"]. Use it for EVERY window move. "Move to my laptop/monitor" = center. Several windows (side by side, a layout) = ONE call, moves joined with +: {PLACE} "Google Chrome" right current + "Windows Terminal" left current; they all move at the same moment. Never sleep between steps: the helpers wait for windows themselves.
@@ -124,7 +126,7 @@ Tools (atticus is a command on your PATH):
 - Type text into the box the user is in (search bar, chat box, doc): {TYPE} "<text>". It goes back to the user's app and pastes; {TYPE} --in "<app>" "<text>" for another app. Before you say it is filled, pasted or sent, {LOOK} once and check it landed in the right place.
 - Message someone in Discord, Slack or Teams (their buttons can't be read): ONE call: {KEYS} Discord ctrl+k; {TYPE} --in Discord "<person or channel>"; {KEYS} Discord enter; {TYPE} --in Discord "<message>"; {KEYS} Discord enter. Send only when the user said to send; otherwise stop before the last Enter.
 - Clipboard: {CLIP}. Music (Spotify or any player): {MEDIA} playpause|next|previous.
-- Inside an app, when nothing above does it (buttons, menus, tabs, fields): {UI} see "<app>" ["title words"] lists them with IDs (B3 Button "Play", E1 Edit "To" = "text", X2 Text "Display is 9"); then {UI} click <ID or exact name>..., several in one call in order ({UI} click "Seven" "Plus" "Two"), or {UI} set <ID> "<text>" to fill a field. IDs last until the next see. Keys: {KEYS} "<app>" ctrl+s (alt+f4, f5, enter…).
+- Inside an app, when nothing above does it (buttons, menus, tabs, fields): {UI} see "<app>" ["title words"] lists them with IDs (B3 Button "Play", E1 Edit "To" = "text"); then {UI} click <ID or exact name>..., several in one call in order ({UI} click "Seven" "Plus" "Two"), or {UI} set <ID> "<text>" to fill a field. IDs last until the next see. Keys: {KEYS} "<app>" ctrl+s (alt+f4, f5, enter…).
 - Spotify: play any song, album, artist or the user's own playlist: {PLAY} "<name, plus artist if known>". Music requests mean Spotify unless the user names another app.
 - To-do, "remind me", "note this": {NOTE} "<text>" keeps it in the user's notes file. For a time ("remind me in 20 minutes"): {WATCH} cmd '[ $(date +%s) -ge <unix time> ]' and say when. "Where are my notes" = {SHOW} "~/Documents/Atticus Notes.md".
 - "Tell me when / watch / monitor X" (a reply finishes, a build or download ends, a page shows something): look once, pick a short phrase on screen that shows the state, then ONE call: {WATCH} "<app>" "<window title words or empty>" <gone|shows> "<phrase>" ["<what to do then, as a request>"]. gone = done when the phrase disappears; shows = done when it appears. It reads that window every 5 s with no AI (it must stay open, covered is fine, not minimized), notifies the user, then runs the request. Without the screen: {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]; prefer cmd when it fits. A Codex task is done when: tail -n 2 "$(ls -t ~/.codex/sessions/*/*/*/*.jsonl | head -1)" | grep -q task_complete. Reply that you are watching. "Stop watching": {ME} --unwatch.
@@ -184,7 +186,7 @@ RISKY = [('Delete something?', r'\b(rm|rmdir|srm|unlink|shred|trash|mv|del|erase
          ('Buy this?', r'\b(buy|purchase|checkout|check out|place (an |the )?order|pay)\b'),
          ('Change a file?', r'(?<![0-9&])>>?\s*(?!/dev/null|\$null|&|/tmp/|nul\b)\S|\btee\s|curl\b.*\s(-o|--output|-O)\b|\b(set-content|add-content|out-file|new-item|rename-item|copy-item|ren|copy|xcopy|robocopy)\b'),
          ('Run a system command?', r'\bsudo\b|\bkillall\b|\btaskkill\b|\bstop-process\b|\breg(\.exe)?\s+(add|delete|import)|set-itemproperty|new-itemproperty|\bsc(\.exe)?\s+(config|delete|stop|create)|\bschtasks\b|-verb\s+runas|\bnetsh\b|\bsetx\b|set-executionpolicy|\b(shutdown|stop-computer|restart-computer)\b|\bwinget\s+(install|uninstall)')]
-QUIET = (SEARCH, READ, LOOK, FRONT, SHOW, PLACE, PLAY, TYPE, REMEMBER, FORGET, ABOUT, PICK, SET, HISTORY, FIND, CLIP, MEDIA, NOTE, WINDOWS, UI + ' see', JOPLIN, 'start "" "http', 'start http')   # never delete, send or buy
+QUIET = (SEARCH, READ, LOOK, FRONT, SHOW, PLACE, PLAY, TYPE, REMEMBER, FORGET, ABOUT, PICK, SET, HISTORY, FIND, CLIP, MEDIA, NOTE, WINDOWS, UI + ' see', JOPLIN, WEB, 'start "" "http', 'start http')   # never delete, send or buy (WEB asks itself before a risky click)
 
 
 # Enter after typing a message sends it in chat apps (Discord, Slack, Teams…); Enter after typing into a search box
@@ -446,8 +448,11 @@ def show(target):
                 return f'no app or file called "{target}"'
     except OSError as e:
         return f'could not open {target}: {e.strerror or e}'
+    ready = ''
+    if re.match(r'https?://', t) and app in CHROMES and os.path.exists(relay_file(app)):   # pages already shared: wait for this one, so a read next sees it
+        ready = '' if (r := web('wait', text=t, app=app, fresh=True)) == 'Page ready.' else '\n' + r
     if pref('openOn', 'here') == 'here':   # Settings → Open apps on: This screen = in front, like a double-click
-        return f'opened {target} in front'
+        return f'opened {target} in front' + ready
     scr, other = screens(), None
     if len(scr) > 1 and app and winctl.key(app) != winctl.key(mine):
         ws = winctl.find(mine)
@@ -456,7 +461,7 @@ def show(target):
         if other:
             place(app, 'center', other)
         winctl.focus_app(mine)
-    return f'opened {target} in {app or "its app"}' + (f' on {other}; focus back on {mine}' if other else '')
+    return f'opened {target} in {app or "its app"}' + (f' on {other}; focus back on {mine}' if other else '') + ready
 
 
 NUMS = dict(zip('zero one two three four five six seven eight nine ten'.split(), map(str, range(11))))
@@ -980,6 +985,351 @@ def search(q):
     return '\n\n'.join('\n'.join(filter(None, r)) for r in out) or 'no results (DuckDuckGo may be blocking; use WebSearch)'
 
 
+# ---------- Web pages: the user's Chrome or Edge through the DevTools protocol; ui/web.js runs in the tab ----------
+# The browser's own switch (chrome://inspect/#remote-debugging, Chrome 144+, and the same page in Edge) lets one program
+# connect to the browser the user already has open, profile and sign-ins included; the browser asks the user to Allow
+# each connection. One relay process holds that connection, so the user clicks Allow once per stretch of use, not per step.
+WEB_JS = os.path.join(os.path.dirname(SELF), 'ui', 'web.js')
+CHROMES = {'Google Chrome': ('chrome', r'Google\Chrome'), 'Microsoft Edge': ('msedge', r'Microsoft\Edge')}   # app -> (process, folder in %LOCALAPPDATA%)
+RISKY_CLICK = (r'\b(send|post|publish|delete|remove|trash|buy|purchase|pay|checkout|order|unsubscribe|confirm|submit|complete|finish|'
+               r'accept|agree|yes|ok|continue|subscribe|cancel|transfer|submits a form)\b')   # words that hide a send/delete/buy count too
+WEB_IDLE = 600   # the relay lets go of the browser after 10 idle minutes (the browser shows a "being controlled" bar while it holds on)
+
+
+class WebOff(Exception):
+    """The browser isn't sharing its pages: the user turns it on once."""
+
+
+class Cdp:
+    """The smallest WebSocket client the DevTools protocol needs (text frames, masked), so there is nothing more to install."""
+    def __init__(self, url, timeout=30):
+        u = urllib.parse.urlparse(url)
+        self.s, self.buf, self.n = socket.create_connection((u.hostname, u.port), timeout=timeout), bytearray(), 0
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.s.sendall(f'GET {u.path or "/"} HTTP/1.1\r\nHost: {u.hostname}:{u.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                       f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n'.encode())   # no Origin: the browser allows local programs
+        while b'\r\n\r\n' not in self.buf:   # the browser answers once the user clicks Allow
+            self._fill()
+        head, _, rest = bytes(self.buf).partition(b'\r\n\r\n')
+        self.buf = bytearray(rest)
+        want = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+        if b' 101 ' not in head.split(b'\r\n')[0] or want.encode() not in head:
+            raise ConnectionError(head.split(b'\r\n')[0].decode('latin-1') or 'the browser said no')
+
+    def _fill(self):
+        b = self.s.recv(65536)
+        if not b:
+            raise ConnectionError('the browser closed the connection')
+        self.buf += b
+
+    def _read(self, n):
+        while len(self.buf) < n:   # a timeout leaves what came so far in buf, so the stream stays whole
+            self._fill()
+        out = bytes(self.buf[:n]); del self.buf[:n]
+        return out
+
+    def _frame(self, op, data):
+        n, mask = len(data), os.urandom(4)
+        size = bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + n.to_bytes(2, 'big') if n < 65536 else bytes([0x80 | 127]) + n.to_bytes(8, 'big')
+        masked = (int.from_bytes(data, 'big') ^ int.from_bytes((mask * (n // 4 + 1))[:n], 'big')).to_bytes(n, 'big') if n else b''
+        self.s.sendall(bytes([0x80 | op]) + size + mask + masked)
+
+    def recv(self):
+        msg = b''
+        while True:
+            b0, b1 = self._read(2)
+            n = b1 & 0x7f
+            n = int.from_bytes(self._read(2), 'big') if n == 126 else int.from_bytes(self._read(8), 'big') if n == 127 else n
+            mask = self._read(4) if b1 & 0x80 else b''
+            data = self._read(n)
+            if mask:
+                data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+            op = b0 & 0x0f
+            if op == 8:
+                raise ConnectionError('the browser closed the connection')
+            if op == 9:
+                self._frame(10, data)   # ping -> pong
+            elif op != 10:
+                msg += data
+                if b0 & 0x80:
+                    return msg.decode('utf-8', 'replace')
+
+    def call(self, method, params=None, session=None, timeout=15):
+        self.n += 1
+        self._frame(1, json.dumps({'id': self.n, 'method': method, 'params': params or {}, **({'sessionId': session} if session else {})}).encode())
+        self.s.settimeout(timeout)
+        while True:   # events and late answers to timed-out calls pass by
+            m = json.loads(self.recv())
+            if m.get('id') == self.n:
+                if 'error' in m:
+                    raise RuntimeError(m['error'].get('message', 'the browser said no'))
+                return m.get('result', {})
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def debug_url(app):
+    """The browser's DevTools address, '' when it isn't sharing. DevToolsActivePort is written by the browser's remote-debugging
+    switch (or --remote-debugging-port); Settings' webPort covers a browser the user starts with its own port and profile."""
+    try:
+        with open(os.path.join(os.environ.get('LOCALAPPDATA', HOME), CHROMES[app][1], 'User Data', 'DevToolsActivePort')) as f:
+            port, path = f.read().split()[:2]
+        return f'ws://127.0.0.1:{int(port)}{path}'
+    except (OSError, ValueError, KeyError):
+        pass
+    port = pref('webPort', 0)
+    try:
+        return json.loads(get(f'http://127.0.0.1:{int(port)}/json/version', 2))['webSocketDebuggerUrl'] if port else ''
+    except (OSError, ValueError, KeyError):
+        return ''
+
+
+def relay_file(app):
+    return os.path.join(DIR, f'web-{CHROMES[app][0]}.json')
+
+
+def web_relay(app, url):
+    """--web-relay: holds one DevTools connection to the browser and answers this file's web() over a local socket (a token in
+    the user's own folder). Ends after WEB_IDLE quiet seconds, or when the browser closes."""
+    path, sessions = relay_file(app), {}
+    def write(j):
+        os.makedirs(DIR, exist_ok=True)
+        with open(path + f'.{os.getpid()}', 'w') as f:
+            json.dump({**j, 'app': app, 'pid': os.getpid()}, f)
+        os.replace(path + f'.{os.getpid()}', path)
+    try:
+        c = Cdp(url, 90)   # time for the user to see and click Allow
+    except ConnectionRefusedError:
+        return write({'error': 'off'})   # a port file left by a browser that has closed
+    except (OSError, ValueError) as e:
+        return write({'error': str(e) or 'no answer'})
+    srv = socket.socket()
+    srv.bind(('127.0.0.1', 0)); srv.listen(4); srv.settimeout(WEB_IDLE)
+    token = secrets.token_hex(16)
+    write({'port': srv.getsockname()[1], 'token': token})
+    def evaluate(target, expr, timeout):
+        for again in (True, False):
+            if target not in sessions:
+                sessions[target] = c.call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
+            try:
+                r = c.call('Runtime.evaluate', {'expression': expr, 'returnByValue': True, 'userGesture': True}, sessions[target], timeout)
+                break
+            except RuntimeError as e:
+                sessions.pop(target, None)
+                if not again or 'session' not in str(e).lower():
+                    raise
+        if 'exceptionDetails' in r:
+            raise RuntimeError(r['exceptionDetails'].get('exception', {}).get('description', 'the page script failed')[:300])
+        return r.get('result', {}).get('value')
+    try:
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                return
+            with conn:
+                conn.settimeout(5)
+                try:
+                    req = json.loads(conn.makefile('rb').readline() or b'{}')
+                    if not secrets.compare_digest(str(req.get('token', '')), token):
+                        continue
+                    if req.get('op') == 'targets':
+                        out = {'value': [{'id': t['targetId'], 'title': t.get('title', ''), 'url': t.get('url', '')}
+                                         for t in c.call('Target.getTargets')['targetInfos'] if t.get('type') == 'page']}
+                    elif req.get('op') == 'eval':
+                        out = {'value': evaluate(req['target'], req['expr'], min(60, float(req.get('timeout', 15))))}
+                    else:
+                        out = {'value': 'ok'}
+                except socket.timeout:
+                    out = {'error': 'the page did not answer in time'}
+                except (RuntimeError, ValueError, KeyError, TypeError) as e:
+                    out = {'error': str(e)[:300]}
+                conn.sendall((json.dumps(out) + '\n').encode())
+    except (ConnectionError, OSError):   # the browser closed, or ended the session
+        return
+    finally:
+        c.close(); srv.close()
+        try:
+            with open(path) as f:
+                mine = json.load(f).get('pid') == os.getpid()
+            if mine:
+                os.remove(path)
+        except (OSError, ValueError):
+            pass
+
+
+def cdp(app, op, **kw):
+    """One request to the browser through its relay; starts the relay first (the browser then asks the user to Allow, once)."""
+    path = relay_file(app)
+    off = (f'{app} is not open, or is not sharing its pages with Atticus. To turn it on (once), the user clicks Chrome or Edge under Set up web pages in '
+           f'Atticus Settings > Screen & Windows. For now use the screen: {UI} see "{app}"')
+    for start in (False, True):
+        if start:
+            url = debug_url(app)
+            if not url:
+                raise WebOff(off)
+            spawn = lambda flags: subprocess.Popen([sys.executable, SELF, '--web-relay', app, url], creationflags=flags, stdin=subprocess.DEVNULL,
+                                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            try:
+                p = spawn(0x08000000 | 0x00000200 | 0x01000000)   # no window, out of the ask's job: it outlives this step
+            except OSError:
+                p = spawn(0x08000000 | 0x00000200)
+            told = False
+            for i in range(600):   # up to 60 s for the user's Allow
+                if os.path.exists(path) or p.poll() is not None:
+                    break
+                if i == 15 and not told and winctl:
+                    told = True
+                    winctl.notify(f'Click Allow in {app} so Atticus can use the page.')
+                time.sleep(0.1)
+        try:
+            with open(path) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if r.get('error'):
+            if not start:
+                continue   # an old relay's failure: try again
+            if r['error'] == 'off':
+                raise WebOff(off)
+            raise WebOff(f'{app} did not let Atticus in ({r["error"][:120]}). If it asked the user to Allow and they said no, say it was not done; '
+                         f'otherwise use the screen: {UI} see "{app}"')
+        try:
+            with socket.create_connection(('127.0.0.1', int(r['port'])), timeout=2) as s:
+                s.settimeout(float(kw.get('timeout', 15)) + 3)
+                s.sendall((json.dumps({'token': r['token'], 'op': op, **kw}) + '\n').encode())
+                out = json.loads(s.makefile('rb').readline())
+        except (OSError, KeyError, ValueError, TypeError):
+            continue   # a relay that ended (the browser closed): start a new one
+        if 'error' in out:
+            raise RuntimeError(out['error'])
+        return out.get('value')
+    raise WebOff(f'{app} did not answer. Use the screen instead: {UI} see "{app}"')
+
+
+def pick_tab(app, tabs, want=''):
+    """The tab the user means: the one just opened (want), else the one showing in the browser's front window."""
+    host = lambda u: (urllib.parse.urlparse(u).hostname or '').removeprefix('www.')
+    tabs = [t for t in tabs if not re.match(r'(devtools|chrome-extension|edge-extension|chrome-untrusted)://', t['url'])] or tabs
+    if want and (hits := [t for t in tabs if host(t['url']) == host(want)]):
+        return hits[0]['id']
+    for w in winctl.find(CHROMES[app][0]) if winctl else []:   # front to back; a window's title starts with its showing tab's title
+        hits = sorted((t for t in tabs if t['title'] and w['title'].startswith(t['title'])), key=lambda t: -len(t['title']))
+        if hits:
+            return hits[0]['id']
+    return tabs[0]['id'] if tabs else ''
+
+
+def page_ready(read, want=''):
+    """Poll readiness and a stable DOM briefly; navigation errors are transient, permission errors are not.
+    want: the host just opened; another tab that is already loaded must not count as ready."""
+    host = lambda u: (urllib.parse.urlparse(u).hostname or '').removeprefix('www.')
+    end = time.monotonic() + 5; previous = None; since = None
+    while time.monotonic() < end:
+        try: state = json.loads(read(min(0.5, max(0.01, end - time.monotonic()))))
+        except (ValueError, TypeError, socket.timeout): state = {}
+        except RuntimeError as e:
+            if 'blocks this' in str(e): raise
+            state = {}
+        key = state.get('signature') if isinstance(state, dict) and state.get('ready') is True else None
+        if key and want and host(key.split('|')[0]) != host(want): key = None
+        now = time.monotonic()
+        if key is not None and key == previous and since is not None and now - since >= 0.2: return True
+        if key != previous or key is None: previous, since = key, now if key is not None else None
+        time.sleep(min(0.1, max(0, end - now)))
+    return False
+
+
+def web_setup(app):
+    """Opens the browser's own remote-debugging switch for the user to turn on (once). Atticus never flips it itself."""
+    app = next((a for a in CHROMES if app and (app == a or app.lower() in a.lower())), None) or next((a for a in CHROMES if winctl and winctl.find(CHROMES[a][0])), 'Google Chrome')
+    proc = CHROMES[app][0]
+    url = ('edge' if proc == 'msedge' else 'chrome') + '://inspect/#remote-debugging'
+    try:
+        subprocess.Popen(['cmd', '/c', 'start', '', proc, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        return f'Could not open {app}: {e}'
+    return (f'Opened {url} in {app}. Turn on "Allow remote debugging" there (once, or again if the browser forgets it). After that, the first time Atticus reads a page '
+            f'{app} asks you to Allow it; Atticus keeps that connection for {WEB_IDLE // 60} idle minutes, so you click Allow once per stretch of use.')
+
+
+def web(cmd, n='', text='', app=None, fresh=False):
+    """{WEB}: the user's Chrome or Edge tab through its page, not the screen: read it (numbered controls), click or fill by number.
+    Faster and surer than screenshots + clicks; the user's mouse, keyboard and focus stay put."""
+    if cmd == 'setup':
+        return web_setup(app or n or os.environ.get('ATTICUS_FRONT', ''))
+    if not pref('webPages', True):
+        return f'Web pages are off in Atticus Settings. Use the screen instead: {UI} see'
+    explicit = app; app = app or os.environ.get('ATTICUS_FRONT', '')
+    path = os.path.join(os.environ.get('ATTICUS_ASK') or DIR, 'web.json')
+    saved = {}
+    if not fresh and (cmd != 'read' or os.environ.get('ATTICUS_ASK')):   # one tab for the whole ask; a new ask picks again
+        try:
+            with open(path) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            pass
+        if not explicit and saved.get('app') in CHROMES:
+            app = saved['app']
+    if app not in CHROMES:
+        if explicit or app and re.search(r'firefox|opera|vivaldi|brave|arc', app, re.I):
+            return f'{app} can\'t be driven this way. Use the screen: {UI} see "{app}"'
+        app = next((a for a in CHROMES if debug_url(a)), '') or next((a for a in CHROMES if winctl and winctl.find(CHROMES[a][0])), '')
+    if not app:
+        return 'No Chrome or Edge window is open.'
+    with open(WEB_JS, encoding='utf-8') as f:
+        src = f.read()
+    try:
+        tab = saved.get('tab') if saved.get('app') == app else None
+        if not tab:
+            tab = pick_tab(app, cdp(app, 'targets', timeout=5), text if cmd == 'wait' else '')
+            if not tab:
+                return f'No page is open in {app}.'
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + '.tmp', 'w') as f:
+                json.dump({'app': app, 'tab': tab}, f)
+            os.replace(path + '.tmp', path)
+        js = lambda c, expr=None, timeout=15: cdp(app, 'eval', target=tab, expr=expr or f'({src})({json.dumps(c)}, {json.dumps(n)}, {json.dumps(text)})', timeout=timeout)
+        if cmd == 'wait': return 'Page ready.' if page_ready(lambda timeout: js('ready', timeout=timeout), text) else 'Page still loading. Read again before acting.'
+        if cmd == 'click':
+            try:
+                c = json.loads(js('name'))
+            except (ValueError, TypeError):
+                return 'No such control. Read the page again.'
+            if re.search(RISKY_CLICK, c['what'], re.I) and pref('safe', True):
+                if not os.environ.get('ATTICUS_ASK'):   # a saved shortcut has no Allow card: never click these blind
+                    return 'Safe mode: this click needs the user\'s OK. Ask through Atticus, not a shortcut.'
+                if ask_user({'q': f'Click "{c["short"][:40]}"?', 'cmd': f'{app}: click "{c["what"][:300]}"'}, 60) != 'y':
+                    return 'The user said no. Do not try another way; say it was not done.'
+            if json.loads(js('name')) != c:
+                return 'The control changed since the check. Read the page again.'
+            text = c['url']   # click only in the tab that was checked
+            done = js('click')
+            if not done.startswith('Clicked'): return done
+            try:
+                if not page_ready(lambda timeout: js('ready', timeout=timeout)): return done + '\nPage still loading. Read again before acting.'
+                return done + '\nNow: ' + js('', 'document.title + " " + location.href', timeout=1)
+            except (RuntimeError, ValueError, OSError):
+                return done + '\nPage readiness unavailable. Read again before acting.'   # the click went through; never report it failed and cause a second one
+        return str(js(cmd if cmd in ('read', 'fill') else 'read'))[:9000]
+    except WebOff as e:
+        if saved and os.path.exists(path):
+            os.remove(path)   # a pin to a browser that has closed: the next step picks again
+        return str(e)
+    except (RuntimeError, OSError, ValueError, TypeError) as e:
+        if re.search(r'no target|target closed|not found', str(e), re.I) and os.path.exists(path):
+            os.remove(path)   # the tab is gone: the next step picks again
+        return f'Could not use the page: {e}\nUse the screen instead: {UI} see "{app}"'
+
+
 def label(name, inp):
     """Turn a tool call into a short line for the overlay."""
     if name == 'WebSearch':
@@ -1027,6 +1377,8 @@ def label(name, inp):
         return 'Moving it to the Recycle Bin'
     if c.startswith(NOTE):
         return 'Noting that down'
+    if c.startswith(WEB):
+        return {'read': 'Reading the page', 'click': 'Clicking', 'fill': 'Filling it in', 'wait': 'Waiting for the page', 'setup': 'Opening browser setup'}.get((c[len(WEB):].split() or [''])[0], 'Using the page')
     if c.startswith(WINDOWS):
         return 'Checking your windows'
     if c.startswith(UI + ' see'):
@@ -1155,7 +1507,7 @@ def ping():
 def clean(text):
     """Failure reports carry no emails, numbers, file paths, link queries, long tokens or text typed for the user."""
     t = str(text).replace(SELF, 'atticus').replace(HOME, '~').replace(HOME.replace(os.sep, '/'), '~')
-    t = re.sub(r'((?:--type(?: --in (?:"[^"]*"|\S+))?|--ui set \S+|--note|--remember)\s+)("(?:[^"\\]|\\.)*"|\'[^\']*\')', r'\1<text>', t)
+    t = re.sub(r'((?:--type(?: --in (?:"[^"]*"|\S+))?|--ui set \S+|--web fill \d+|--note|--remember)\s+)("(?:[^"\\]|\\.)*"|\'[^\']*\')', r'\1<text>', t)
     t = re.sub(r'[\w.+-]+@[\w-]+\.[\w.]+', '<email>', t)
     t = re.sub(r'(https?://[^\s"\'?#]+)[?#][^\s"\']*', r'\1', t)
     t = re.sub(r'~[\\/][^\s"\']+', '~/<path>', t)
@@ -1727,6 +2079,10 @@ def main():
         return unlearn(' '.join(args[1:]))
     if args == ['--check']:   # the setup window asks this
         return print(json.dumps(plan()))
+    if args[:1] == ['--web-relay'] and len(args) == 3:   # started by web(), never by the AI
+        return web_relay(args[1], args[2])
+    if args[:1] == ['--web']:
+        return print(web(*args[1:3], ' '.join(args[3:])))
     if args[:1] == ['--search']:
         return print(search(' '.join(args[1:])))
     if args[:1] == ['--read']:
@@ -1900,5 +2256,6 @@ if __name__ == '__main__':
         assert not risky(route) and risky(route + f'; {KEYS} Discord enter') == 'Send this?' and not risky(f'{KEYS} Chrome enter')
         assert risky(f'{KEYS} Outlook ctrl+enter') == 'Send this?' and not risky(f'{KEYS} Notepad ctrl+s') and not risky(f'{UI} see "Outlook"')
         assert label('Bash', {'command': f'{UI} see "Spotify"'}) == 'Looking at Spotify' and label('Bash', {'command': f'{KEYS} Notepad ctrl+s'}) == 'Pressing keys'
+        assert label('Bash', {'command': f'{WEB} read'}) == 'Reading the page' and not risky(f'{WEB} fill 2 "buy"; {WEB} click 3') and os.path.exists(WEB_JS)
         sys.exit(print('selftest ok'))
     main()
