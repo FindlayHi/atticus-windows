@@ -258,8 +258,13 @@ def set_frame(hwnd, x, y, w, h):
     user32.SetWindowPos(hwnd, None, x - dl, y - dt, w + dl + dr, h + dt + db, 0x0014)   # SWP_NOZORDER | SWP_NOACTIVATE
 
 
+ON_BRING = None   # set by atticus.py: tells Atticus.exe's focus guard this raise is on purpose
+
+
 def bring(hwnd):
     """Bring a window forward. Windows only lets the app with the last input do that, so borrow the front window's input queue."""
+    if ON_BRING:
+        ON_BRING()
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)   # SW_RESTORE
     fg = user32.GetForegroundWindow()
@@ -720,7 +725,7 @@ def _find_item(i):
     return got[1], got[2]
 
 
-def _press(c, it):
+def _press(c, it, hwnd=None):
     for how in ('GetInvokePattern', 'GetTogglePattern', 'GetSelectionItemPattern', 'GetExpandCollapsePattern'):
         try:
             p = getattr(c, how)()
@@ -732,6 +737,9 @@ def _press(c, it):
         except Exception:
             continue
     try:
+        if hwnd:
+            bring(hwnd)   # a real click needs the window in front; the actions above work behind the user's app
+            time.sleep(0.15)
         c.Click(simulateMove=False)
         return f'clicked "{it["name"]}" (with the mouse)'
     except Exception as e:
@@ -739,20 +747,19 @@ def _press(c, it):
 
 
 def ui_click(*ids):
-    """Press elements from the last ui_see, in order: through the app's own accessibility actions when it has them (no mouse),
-    else a real click. Stops at the first one that is missing."""
+    """Press elements from the last ui_see, in order: through the app's own accessibility actions when it has them (no mouse,
+    the window can stay behind the user's app), else a real click. Stops at the first one that is missing."""
     try:
         got, hwnd = _find_items(ids)
     except (OSError, ValueError):
         return 'look first: run --ui see "<app>"'
-    bring(hwnd)
     out = []
     for i, c, it in got:
         if not it:
             out.append(f'no element {i}: look again'); break
         if not c:
             out.append(f'"{it["name"]}" is gone: look again'); break
-        out.append(_press(c, it))
+        out.append(_press(c, it, hwnd))
         if len(got) > 1:
             time.sleep(0.05)   # the app keeps up
     return '\n'.join(out)

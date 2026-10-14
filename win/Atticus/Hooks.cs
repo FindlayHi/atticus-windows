@@ -19,6 +19,8 @@ static class Hooks
     public static bool Recording;
     public static string Mine = "";          // the app the user is in, never Atticus itself
     public static IntPtr MineHwnd;
+    public static DateTime LastInput;        // the user's own last key or click (never injected): a switch they made
+    public static Func<IntPtr, bool> Guard;  // a window came forward by itself while Atticus works: true = it was put back
     static bool down;
 
     public static void Install()
@@ -53,6 +55,7 @@ static class Hooks
         var k = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(l);
         bool press = w == WM_KEYDOWN || w == WM_SYSKEYDOWN, up = w == WM_KEYUP || w == WM_SYSKEYUP;
         if ((k.flags & 0x10) != 0) return CallNextHookEx(kb, code, w, l);   // injected (ours, or the AI typing): never a shortcut
+        if (press) LastInput = DateTime.Now;
         if (Recording)
         {
             if (IsMod(k.vkCode)) { RecordingMods?.Invoke(Label(0, Mods()).Replace("+Key 0", "").Replace("Key 0", "")); return CallNextHookEx(kb, code, w, l); }
@@ -83,6 +86,7 @@ static class Hooks
         if (code >= 0 && (w == WM_LBUTTONDOWN || w == WM_RBUTTONDOWN))
         {
             var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(l);
+            if ((m.flags & 1) == 0) LastInput = DateTime.Now;   // LLMHF_INJECTED: a helper's click, not the user's
             ClickAt?.Invoke(m.pt.X, m.pt.Y);
         }
         return CallNextHookEx(mouse, code, w, l);
@@ -95,6 +99,7 @@ static class Hooks
         if (pid == Environment.ProcessId) return;
         var name = ProcessName(hwnd);
         if (name is "" or "Search" or "Start" or "Windows Start Experience Host" or "Windows Shell Experience Host") return;   // the Start menu passes through
+        if (Guard?.Invoke(hwnd) == true) return;   // the user's app stays theirs
         Mine = name; MineHwnd = hwnd;
     }
 }

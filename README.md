@@ -110,6 +110,10 @@ A service is only mentioned to the AI when your ask is about it, so each one cos
 
 **Or write one.** A Python file in your integrations folder (linked from Settings) loads next to the built-in ones and survives updates. Copy the shape of any file in `integrations/`. Good ones belong in a pull request.
 
+## Works behind you
+
+Unless you ask to open, show or switch to something, Atticus opens pages and apps behind the app you're in and works there (UI Automation clicks don't need the window in front). A live mini screen in the box shows the window it's working in; click it to bring that window forward. A focus guard puts back any window that jumps in front by itself while a task runs. Settings → Screen & Windows: **Work on sites** (in the background or in front) and **Mini screen**. The mini screen is a DWM thumbnail, so it is live, costs nothing, and is hidden from screen sharing along with the box.
+
 ## Watch for me
 
 Say "tell me when the download is done" or "watch this page until it says shipped". Atticus sets it up once, then checks every 5 seconds on your PC with no AI, so waiting is free. It reads the window with Windows' own text recognition, so the window must stay open (covered is fine, minimized is not). When it fires you get a notification, and it runs a follow-up if you asked for one. Coding agents like Codex are watched through their own log, with no screen at all. Say "stop watching" to cancel.
@@ -156,7 +160,7 @@ Fixes to the brain or the pages that aren't Windows-specific are worth sending u
 Merged from atticus-mac up to `eba8597` (2026-10-13). These Mac features weren't ported; their files are left out of this fork so a merge never ships them half-working:
 
 - Meeting Copilot (call audio needs WASAPI loopback instead of ScreenCaptureKit)
-- Background work with a live mini screen, and Chrome page reading and clicking (`ui/web.js`)
+- Chrome page reading and clicking (`ui/web.js`)
 - Native "hands" (clicks, typing, scrolling through Accessibility); `atticus --ui` covers part of it with UI Automation
 - Selected-text rewrite, and drafts inserted at the cursor
 - Contacts lookup, the Report feedback window, and the Apple speech model picker

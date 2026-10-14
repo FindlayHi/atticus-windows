@@ -42,6 +42,31 @@ static class Native
     [DllImport("user32")] public static extern int GetWindowLong(IntPtr h, int i);
     [DllImport("user32")] public static extern int SetWindowLong(IntPtr h, int i, int v);
     [DllImport("user32")] public static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32")] public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32")] static extern bool BringWindowToTop(IntPtr h);
+    [DllImport("user32")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+    [DllImport("kernel32")] static extern uint GetCurrentThreadId();
+    [DllImport("dwmapi")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
+    [DllImport("dwmapi")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
+    public static bool Cloaked(IntPtr h) => DwmGetWindowAttribute(h, 14, out int v, 4) == 0 && v != 0;   // DWMWA_CLOAKED: on another desktop, or a hidden UWP frame
+
+    // Bring a window forward. Windows lets only the app with the last input do that: borrow the front window's input queue.
+    public static bool Bring(IntPtr h)
+    {
+        var fg = GetForegroundWindow();
+        uint me = GetCurrentThreadId(), them = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out _) : 0;
+        var attached = them != 0 && them != me && AttachThreadInput(me, them, true);
+        Tap(0xE8);   // an unassigned key: counts as input, does nothing
+        BringWindowToTop(h);
+        var ok = SetForegroundWindow(h);
+        if (attached) AttachThreadInput(me, them, false);
+        return ok;
+    }
 
     public delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int obj, int child, uint thread, uint time);
     [DllImport("user32")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc fn, uint pid, uint thread, uint flags);

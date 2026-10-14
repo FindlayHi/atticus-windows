@@ -42,8 +42,9 @@ class BrainTests(unittest.TestCase):
             focus.assert_not_called()
 
     def test_focus_restore_only_addresses_existing_process(self):
-        with patch.object(atticus.winctl, 'focus_app') as focus, patch.object(atticus.winctl, 'launch') as launch:
-            atticus.restore_focus('Spotify', 'what time is it', [])
+        with patch.object(atticus.winctl, 'focus_app') as focus, patch.object(atticus.winctl, 'launch') as launch, \
+                patch.object(atticus.winctl, 'front', return_value=('Notepad', 'notes', 7)):
+            atticus.restore_focus('Spotify', 'save my notes', [f'{atticus.KEYS} Notepad ctrl+s'])
             focus.assert_called_once_with('Spotify')   # an open window only: never a relaunch
             launch.assert_not_called()
 

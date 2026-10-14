@@ -68,6 +68,8 @@ addEventListener('DOMContentLoaded', () => {
     public DateTime lastDone = DateTime.MinValue;
     System.Windows.Forms.Timer holdTimer, pauseItem, aheadItem, quiet;
     Point grabOrigin; Rectangle grabFrame;
+    MiniScreen mini;
+    DateTime guardUntil, allowUntil;   // the focus guard: on while a task runs and 2 s after; off for 3 s after a click on the mini screen
     bool listening => speech.Running;
     public bool Listening => listening;
     double Dpi => DeviceDpi / 96.0;
@@ -90,6 +92,8 @@ addEventListener('DOMContentLoaded', () => {
         if (Environment.GetEnvironmentVariable("ATTICUS_CAPTURABLE") != "1")   // debugging: let screenshots see the box
             Native.SetWindowDisplayAffinity(Handle, 0x11);   // never in screen shares, recordings, or Atticus's own screenshots
         web = await Web.Load(this, "ui.html", OnMessage, true, PointerScript);
+        mini = new MiniScreen(this) { Publish = v => js("mini", v) };
+        Hooks.Guard = Guard;
         Hooks.EscWanted = () => Visible && Opacity > 0;
         Hooks.Escape = Escape;
         Hooks.Shortcut = Shortcut;
@@ -152,6 +156,13 @@ addEventListener('DOMContentLoaded', () => {
         }
         if (name != "c" || b.ValueKind != JsonValueKind.Object) return;
         if (b.TryGetProperty("boxH", out var bh)) Prefs.D["boxH"] = bh.GetDouble();
+        if (b.TryGetProperty("miniRect", out var mr)) mini.Layout(mr);
+        if (b.TryGetProperty("miniOpen", out _))   // a click on the mini screen: the user wants that window
+        {
+            allowUntil = DateTime.Now.AddSeconds(3); mini.Open();
+            if (!busy) { mini.Reset(); pinned = false; composing = false; Hide(3); }
+        }
+        if (b.TryGetProperty("miniClear", out _)) mini.Reset();
         if (b.TryGetProperty("focus", out var f))
         {
             composing = f.GetBoolean();
@@ -177,6 +188,24 @@ addEventListener('DOMContentLoaded', () => {
         { Prefs.Set(k, false); Program.Settings.Push(); }   // "Turn off tips", "Don't ask again" on a card
         if (b.TryGetProperty("improve", out var im)) { Prefs.Set("improve", im.GetBoolean()); Prefs.Set("improveAsked", true); Program.Settings.Push(); }
         if (b.TryGetProperty("comp", out _)) { }
+    }
+
+    // Focus guard: while a task runs (and 2 s after), a window that comes forward by itself (a launch, a browser tab, a player)
+    // goes straight back behind the user's app. Not when the user asked to see it (atticus.py's "focus" file, for the ask),
+    // a helper raised it on purpose ("raise", 3 s), the user just clicked or typed, or clicked the mini screen.
+    bool Guard(IntPtr h)
+    {
+        var now = DateTime.Now; var mine = Hooks.MineHwnd;
+        if (!(busy || now < guardUntil) || now < allowUntil || (now - Hooks.LastInput).TotalSeconds < 0.6 || mine == IntPtr.Zero || mine == h || !Native.IsWindow(mine)) return false;
+        try
+        {
+            if (File.Exists(Path.Combine(Paths.Config, "focus")) || (DateTime.UtcNow - File.GetLastWriteTimeUtc(Path.Combine(Paths.Config, "raise"))).TotalSeconds < 3) return false;
+        }
+        catch { }
+        Native.GetWindowThreadProcessId(h, out var a); Native.GetWindowThreadProcessId(mine, out var b);
+        if (a == b) return false;   // the user's own app opened a window (a dialog, a second window)
+        BeginInvoke(() => Native.Bring(mine));
+        return true;
     }
 
     void Answer(string s)   // whole, or the waiting side reads it half-written
@@ -246,13 +275,14 @@ addEventListener('DOMContentLoaded', () => {
         var g = gen;
         After(s, () =>
         {
-            if (g != gen || busy || listening || hovering || pinned || composing || Voice.Speaking) return;
+            if (g != gen || busy || listening || hovering || pinned || composing || Voice.Speaking || mini?.Holds == true) return;
             Fade(0, 0.3, () => { if (g == gen) Gone(); });
         });
     }
 
     void Gone()
     {
+        mini?.Reset();
         Hide(); fresh = false; pinned = false; stuck = false; composing = false; js("compose", false); js("visible", false);
         Activatable(false);
     }
@@ -268,6 +298,7 @@ addEventListener('DOMContentLoaded', () => {
 
     public void Hush()   // stop listening, drop what was heard, say nothing
     {
+        mini?.Reset();
         speech.Cancel(); Stop(ref pauseItem); Stop(ref holdTimer); Unwarm();
         clickTalk = false; toggleTalk = false; Stop(ref quiet); stops++;
         listenID++;
@@ -525,7 +556,7 @@ addEventListener('DOMContentLoaded', () => {
     {
         var c = Path.Combine(Path.GetTempPath(), "atticus-commit-" + Guid.NewGuid());
         Process p;
-        try { p = Py.Start(new[] { "--wait" }, new() { ["ATTICUS_UI"] = "1", ["ATTICUS_FRONT"] = Hooks.Mine, ["ATTICUS_COMMIT"] = c }, input: true); }
+        try { p = Py.Start(new[] { "--wait" }, new() { ["ATTICUS_UI"] = "1", ["ATTICUS_FRONT"] = Hooks.Mine, ["ATTICUS_COMMIT"] = c, ["ATTICUS_FOCUS_GUARD"] = "1" }, input: true); }
         catch { return null; }
         p.OutputDataReceived += (_, e) => { if (e.Data != null) BeginInvoke(() => OnLine(p, e.Data)); };
         p.ErrorDataReceived += (_, e) => { if (e.Data != null) Program.Err(e.Data); };
@@ -539,7 +570,7 @@ addEventListener('DOMContentLoaded', () => {
                 try { File.Delete(c); } catch { }
                 if (proc != p) return;   // a cancelled run ending late must not touch the next one
                 if (ahead != "") { proc = null; ahead = ""; busy = listening; return; }
-                busy = false; proc = null; js("finished");
+                busy = false; proc = null; guardUntil = DateTime.Now.AddSeconds(2); mini.Finish(); js("finished");   // a player can jump forward ~0.5 s after it returns
                 if (answer != "") { lastDone = DateTime.Now; Sound.Cue("soundDone"); }
                 Hide(Linger(Math.Max(6, Math.Min(30, answer.Length / 12.0))));   // longer answers stay longer
             });
@@ -551,7 +582,8 @@ addEventListener('DOMContentLoaded', () => {
     {
         if (proc != p) return;   // buffered output from a cancelled request stays cancelled
         if (line == "! setup") { Program.Onboarding.Open(); return; }   // Claude not installed, signed out or no plan
-        if (line.StartsWith("@ ")) { Ring.At(line); return; }   // experimental "show me where"
+        if (line.StartsWith("▣ ")) { if (Prefs.Bool("miniScreen")) mini.Receive(line[2..]); return; }   // the window Atticus works in: the mini screen
+        if (line.StartsWith("@ ")) { if (mini.HasTarget) js("line", line); else Ring.At(line); return; }   // where it clicked in the mini screen, or experimental "show me where"
         if (line == "! improve") { ShowBox(); js("improve"); return; }   // once, after a task that worked: Help improve Atticus?
         if (line.StartsWith("? "))   // safe mode: "? <question>\t<command>\t<answer file>[\t<setting it can turn off>[\tretry]]"
         {
@@ -581,7 +613,7 @@ addEventListener('DOMContentLoaded', () => {
             catch { }
             return;
         }
-        if (line.StartsWith("✓")) { answer = line; Deliver(line.Length > 2 ? line[2..] : ""); }
+        if (line.StartsWith("✓")) { answer = line; mini.Finish(); Deliver(line.Length > 2 ? line[2..] : ""); }
         if (line.StartsWith("! ")) js("msg", line[2..]);
         else js("line", line);
     }
@@ -590,7 +622,8 @@ addEventListener('DOMContentLoaded', () => {
 
     void Run(string t, bool speculative = false)
     {
-        busy = true; answer = "";
+        mini.Reset(); busy = true; answer = "";
+        try { File.Delete(Path.Combine(Paths.Config, "focus")); } catch { }   // a new ask: "show it" from the last one no longer counts
         if (!speculative) js("think");
         if (warm is { } w0 && w0.p.HasExited) warm = null;
         var w = warm ?? Spawn();
