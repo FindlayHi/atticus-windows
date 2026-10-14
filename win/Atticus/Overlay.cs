@@ -203,17 +203,30 @@ addEventListener('DOMContentLoaded', () => {
     bool Guard(IntPtr h)
     {
         var now = DateTime.Now; var mine = Hooks.MineHwnd;
-        if (!(busy || now < guardUntil) || now < allowUntil || (now - Hooks.LastInput).TotalSeconds < 0.6 || mine == IntPtr.Zero || mine == h || !Native.IsWindow(mine)) return false;
+        if (!(busy || now < guardUntil)) return false;
+        var why = now < allowUntil ? "mini screen clicked" : (now - Hooks.LastInput).TotalSeconds < 0.6 ? "user input" : mine == IntPtr.Zero || !Native.IsWindow(mine) ? "no user window" : mine == h ? "" : null;
         try
         {
-            if (File.Exists(Path.Combine(Paths.Config, "focus")) || (DateTime.UtcNow - File.GetLastWriteTimeUtc(Path.Combine(Paths.Config, "raise"))).TotalSeconds < 3) return false;
+            if (why == null && (File.Exists(Path.Combine(Paths.Config, "focus")) || (DateTime.UtcNow - File.GetLastWriteTimeUtc(Path.Combine(Paths.Config, "raise"))).TotalSeconds < 3)) why = "asked to see it";
         }
         catch { }
-        Native.GetWindowThreadProcessId(h, out var a); Native.GetWindowThreadProcessId(mine, out var b);
-        if (a == b && Native.GetWindow(h, 4) != IntPtr.Zero) return false;   // GW_OWNER: a dialog of the user's own window
-        // (a new top-level window of the same app, like the browser window Atticus opened behind, still goes back)
+        if (why == null) { Native.GetWindowThreadProcessId(h, out var a); Native.GetWindowThreadProcessId(mine, out var b); if (a == b && Native.GetWindow(h, 4) != IntPtr.Zero) why = "a dialog of the user's window"; }
+        // GW_OWNER above: a dialog stays; a new top-level window of the same app (the browser window Atticus opened behind) still goes back
+        if (why != "") Trace(h, why ?? "put back");
+        if (why != null) return false;
         BeginInvoke(() => Native.Bring(mine));
         return true;
+    }
+
+    static void Trace(IntPtr h, string what)   // %APPDATA%\Atticus\guard.log: why a window that came forward mid-task stayed (kept short)
+    {
+        try
+        {
+            var f = Path.Combine(Paths.Config, "guard.log");
+            if (File.Exists(f) && new FileInfo(f).Length > 64_000) File.Delete(f);
+            File.AppendAllText(f, $"{DateTime.Now:HH:mm:ss.fff} {Native.ProcessName(h)}: {what}\n");
+        }
+        catch { }
     }
 
     void Answer(string s)   // whole, or the waiting side reads it half-written

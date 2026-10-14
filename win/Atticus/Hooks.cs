@@ -66,7 +66,6 @@ static class Hooks
         var k = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(l);
         bool press = w == WM_KEYDOWN || w == WM_SYSKEYDOWN, up = w == WM_KEYUP || w == WM_SYSKEYUP;
         if ((k.flags & 0x10) != 0) return CallNextHookEx(kb, code, w, l);   // injected (ours, or the AI typing): never a shortcut
-        if (press) LastInput = DateTime.Now;
         if (Recording)
         {
             if (IsMod(k.vkCode)) { RecordingMods?.Invoke(Label(0, Mods()).Replace("+Key 0", "").Replace("Key 0", "")); return CallNextHookEx(kb, code, w, l); }
@@ -89,6 +88,7 @@ static class Hooks
             if (up && down) { down = false; Program.Post(() => Shortcut?.Invoke(false)); return 1; }
         }
         if (press && k.vkCode == VK_ESCAPE && Mods() == 0 && EscWanted?.Invoke() == true) { Program.Post(() => Escape?.Invoke()); return 1; }
+        if (press && !down && !IsMod(k.vkCode)) LastInput = DateTime.Now;   // a key the user typed into an app; never Atticus's own shortcut
         return CallNextHookEx(kb, code, w, l);
     }
 
