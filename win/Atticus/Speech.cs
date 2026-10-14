@@ -131,13 +131,14 @@ sealed class Speech
         mic?.Dispose(); mic = null;
     }
 
-    public Task<string> TranscribeOnce(float[] a) => Transcribe(a);
+    public Task<string> TranscribeOnce(float[] a, string prompt = null) => Transcribe(a, prompt);   // the meeting panel: its own words to lean toward
 
-    async Task<string> Transcribe(float[] a)
+    async Task<string> Transcribe(float[] a, string prompt = null)
     {
+        prompt ??= Prompt;
         var b = factory.CreateBuilder().WithLanguage(Prefs.Str("speechModel").EndsWith(".en") ? "en" : "auto")
             .WithThreads(Math.Clamp(Environment.ProcessorCount - 1, 2, 8)).WithNoContext().WithSingleSegment();
-        if (Prompt.Length > 0) b = b.WithPrompt(Prompt);
+        if (prompt.Length > 0) b = b.WithPrompt(prompt);
         await using var p = b.Build();
         var text = new System.Text.StringBuilder();
         await foreach (var seg in p.ProcessAsync(a)) text.Append(seg.Text);

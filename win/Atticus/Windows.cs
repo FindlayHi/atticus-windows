@@ -1,6 +1,7 @@
 // The Settings window (ui\settings.html) and the first-run setup window (ui\onboarding.html).
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.WinForms;
 
 namespace Atticus;
@@ -70,7 +71,18 @@ sealed class SettingsWindow : PageWindow
 
     public void Apply(string k, object v)   // one setting changed, from this window or by voice (atticus.py --set)
     {
+        if (k == "meetingSave" && v is false && Prefs.Bool("meetingSave"))   // saving off: the current journal stops; keep or delete the past ones
+        {
+            Program.Meeting.SavingChanged(false); Prefs.Set(k, false); Push();
+            var keep = new TaskDialogButton("Keep Meetings"); var drop = new TaskDialogButton("Delete All Meetings");
+            var page = new TaskDialogPage { Caption = "Atticus", Heading = "Keep your saved meetings?", Text = "New transcripts will no longer be saved. You can keep or delete the meetings already on this PC.", Buttons = { keep, drop } };
+            if (TaskDialog.ShowDialog(this, page) == drop) Meetings.Run(new JsonObject { ["action"] = "clear" }, r => Send("st.meetings", r));
+            return;
+        }
         Prefs.Set(k, v);
+        if (k == "meetingSave") Program.Meeting.SavingChanged(v is true);
+        if (k == "meeting" && v is false) Program.Meeting.Stop();
+        if (k == "paused" && v is true) Program.Meeting.Stop(paused: true);
         if (k == "speak" && v is false) Voice.Shush();
         if (k == "menuIcon") Program.Tray.Visible = v is true;
         if (k == "paused" && v is true) Program.Box.Close(false);
@@ -152,6 +164,26 @@ sealed class SettingsWindow : PageWindow
                     Program.Post(() => { if (j.TrimStart().StartsWith("[")) Js($"st.integrations({j})"); Js($"st.intResult({Web.Json(new[] { name, r })})"); });
                 });
                 break;
+            case "meetings": var q = S("query") ?? ""; Meetings.Run(new JsonObject { ["action"] = "list", ["query"] = q }, r => Send("st.meetings", r)); break;
+            case "meetingOpen": if (S("id") is { } mid) Meetings.Run(new JsonObject { ["action"] = "get", ["id"] = mid }, r => Send("st.meetings", r)); break;
+            case "meetingDelete":
+                if (S("id") is not { } did || !Meetings.ConfirmDelete(this)) return;
+                Program.Meeting.Forget(did);
+                Meetings.Run(new JsonObject { ["action"] = "delete", ["id"] = did }, r => Send("st.meetings", r));
+                break;
+            case "meetingExport":
+                if (S("id") is not { } eid) return;
+                Meetings.Run(new JsonObject { ["action"] = "export", ["id"] = eid }, r =>
+                {
+                    if (r["markdown"]?.ToString() is not { } md) { Send("st.meetings", r); return; }
+                    using var dlg = new SaveFileDialog { Filter = "Markdown|*.md", FileName = "Meeting.md", Title = "Export meeting" };
+                    if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                    try { MeetingArchive.Export(md, dlg.FileName); Send("st.meetings", new { notice = "Markdown exported." }); }
+                    catch { Send("st.meetings", new { error = "Could not export. Try another location." }); }
+                });
+                break;
+            case "meetingCopy": if (S("text") is { } mt) { try { Clipboard.SetText(mt); } catch { } Send("st.meetings", new { notice = "Copied." }); } break;
+            case "meetingDemo": if (Prefs.Bool("meeting")) Program.Meeting.Show(demo: true); break;
             case "quit": Application.Exit(); break;
         }
     }

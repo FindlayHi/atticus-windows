@@ -128,6 +128,19 @@ It reads with Windows' UI Automation the moment the shortcut goes down (classic 
 
 Unless you ask to open, show or switch to something, Atticus opens pages and apps behind the app you're in and works there (UI Automation clicks don't need the window in front). A live mini screen in the box shows the window it's working in; click it to bring that window forward. A focus guard puts back any window that jumps in front by itself while a task runs. Settings → Screen & Windows: **Work on sites** (in the background or in front) and **Mini screen**. The mini screen is a DWM thumbnail, so it is live, costs nothing, and is hidden from screen sharing along with the box.
 
+## Meeting Copilot
+
+Turn it on in Settings → Meetings → Meeting Copilot settings, then pick **Start Meeting Copilot** from the tray icon (or **Try Demo** in Settings). A private side panel opens; add notes or Word/text/Markdown files if you like, choose **On a call** or **In person**, and press **Start listening**. Nothing is captured before that click.
+
+- **What it hears:** the call (whatever plays through your default speakers or headset, via WASAPI loopback) and your microphone. Both are transcribed on this PC with the same Whisper model as your asks; lines from the call are labeled with the app (or Them), yours are You. In person, the mic hears the whole room. Audio is never saved or sent.
+- **Answers:** it spots questions (a "?", a question word, or your first name; greetings and "…, right?" are left to you) and suggests an answer from your notes, the call, or plain facts (marked General knowledge). Each answer is one tool-free Haiku call on your Claude plan with only your notes and the last 3 minutes of transcript. **Answer questions on its own** can be When it's sure, Always, or Ask me first. Ask your own question, select transcript lines to ask about them, or **Explain the screen** (one picture of that screen, only when you click it).
+- **While listening:** the panel says Listening with a timer, the tray icon reads "Listening to a meeting", and Windows shows its own mic-in-use icon. The panel never appears in screen shares or recordings. The Atticus shortcut opens the panel instead of the ask box. Drag the header to move it; its spot and size are remembered.
+- **Saving:** with **Save meeting transcripts** on (the default), text, speaker labels, timestamps, notes and answers save as you go under `%APPDATA%\Atticus\meetings\<id>\` (`metadata.json` and an append-only `events.jsonl`), so a crash loses at most two seconds. At the end choose Save or Don't save. **AI meeting summaries** (on by default) has Claude read the transcript once for a recap and action items; off, you get a local recap and the transcript stays on this PC.
+- **Archive:** Settings → Meetings lists them: search titles and transcripts, open one, copy it, export Markdown, or delete it. Ask Atticus "what did we decide in Monday's meeting?" and it searches them (`atticus --meeting-history`).
+- **Noticing calls:** with **Notice when you're in a call** on, when Zoom, Teams, Slack, Discord, WhatsApp, Webex, Skype, Signal or a browser has held the mic for 3 seconds (Windows' own record of mic use), a small card asks whether to listen. It never starts on its own; ignore it and it goes away. When that app lets go of the mic, listening ends.
+
+Try it without a call: `Atticus.exe --meeting-transcribe <file.wav>` runs a recording through the same cutting and speech path and prints the lines.
+
 ## Watch for me
 
 Say "tell me when the download is done" or "watch this page until it says shipped". Atticus sets it up once, then checks every 5 seconds on your PC with no AI, so waiting is free. It reads the window with Windows' own text recognition, so the window must stay open (covered is fine, minimized is not). When it fires you get a notification, and it runs a follow-up if you asked for one. Coding agents like Codex are watched through their own log, with no screen at all. Say "tell me when Claude Code finishes" and Atticus waits for that terminal window to stop changing. Say "stop watching" to cancel.
@@ -156,7 +169,7 @@ This version sends nothing. The daily anonymous user count and the opt-in failur
 - `atticus.py`: the brain (fast commands, system prompt, safety checks), kept close to the Mac version so fixes carry over
 - `winctl.py`: Windows' hands (displays, windows, apps, clipboard and typing, screenshots, files, UI Automation)
 - `integrations/`: one file per service, plus `_custom.py` for the ones you add in Settings
-- `ui/ui.html`, `ui/onboarding.html`, `ui/settings.html`: the overlay, the welcome flow, and Settings
+- `ui/ui.html`, `ui/onboarding.html`, `ui/settings.html`, `ui/meeting.html`: the overlay, the welcome flow, Settings, and the Meeting Copilot panel
 - `ui/web.js`: the script `atticus --web` runs inside the browser tab (from the Mac version)
 - `ui/orbs.js`: the [thinking-orbs](https://github.com/Jakubantalik/thinking-orbs) engine (MIT, Jakub Antalik)
 
@@ -166,7 +179,7 @@ MIT. See `LICENSE`. Original Atticus by [SaarthurR](https://github.com/SaarthurR
 
 ## Contributing
 
-Run `python -m unittest discover -s tests -v` and `python atticus.py --selftest` (with `PYTHONUTF8=1`), and `Atticus.exe --selftest` after building; CI runs all three on Windows. Use a scratch `ATTICUS_DIR` so tests stay off your own chat and rules. Handy while working: `ATTICUS_DEMO="<request>"` runs one request at launch without the mic, `ATTICUS_CAPTURABLE=1` lets screenshots see the box, `Atticus.exe --transcribe <wav>` runs a file through speech, and `Atticus.exe --text "<app>"` prints what text recognition reads in a window.
+Run `python -m unittest discover -s tests -v` and `python atticus.py --selftest` (with `PYTHONUTF8=1`), and `Atticus.exe --selftest` after building; CI runs all three on Windows. Use a scratch `ATTICUS_DIR` so tests stay off your own chat and rules. Handy while working: `ATTICUS_DEMO="<request>"` runs one request at launch without the mic, `ATTICUS_CAPTURABLE=1` lets screenshots see the box, `Atticus.exe --transcribe <wav>` runs a file through speech (`--meeting-transcribe <wav>` through the meeting path), `tests/meeting.html` served with `python -m http.server` checks the meeting panel with a mock bridge, and `Atticus.exe --text "<app>"` prints what text recognition reads in a window.
 
 Fixes to the brain or the pages that aren't Windows-specific are worth sending upstream to [atticus-mac](https://github.com/SaarthurR/atticus-mac) too.
 
@@ -174,8 +187,8 @@ Fixes to the brain or the pages that aren't Windows-specific are worth sending u
 
 Merged from atticus-mac up to `eba8597` (2026-10-13). These Mac features weren't ported; their files are left out of this fork so a merge never ships them half-working:
 
-- Meeting Copilot (call audio needs WASAPI loopback instead of ScreenCaptureKit)
 - Hands extras: the top-right menu bar icons (no system tray equivalent yet); Electron apps that hide their accessibility tree get pictures instead of a map
 - Contacts lookup, the Report feedback window, and the Apple speech model picker
+- From Meeting Copilot: "Get ready before calls" from the calendar, file thumbnails and drag-and-drop (use Add files), and PDF notes
 
 When merging upstream again, resolve `atticus.py`, `ui/settings.html` and `ui/onboarding.html` by hand, and `git rm` the Mac-only files.

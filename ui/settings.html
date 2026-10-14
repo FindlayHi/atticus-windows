@@ -147,6 +147,36 @@
   .about { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 10px 0 6px; }
   .about img { width: 96px; height: 96px; margin-bottom: 8px; }
   .about h1 { margin: 0; } .about p { color: var(--fg2); margin: 4px 0 0; }
+  [hidden] { display: none !important; }
+  #meetingq { width:100%;box-sizing:border-box;background:var(--card);color:var(--fg);border:0;border-radius:9px;padding:10px 12px;font:13px system-ui;box-shadow:inset 0 0 0 .5px var(--line);outline:none;-webkit-user-select:text; }
+  #meetingq:focus { box-shadow:inset 0 0 0 1px var(--accent); }
+  #meetingcount { margin:12px 2px 8px;font-size:11px;color:var(--fg3); }
+  #meetinglist { overflow:hidden; }
+  .meetingrow { all:unset;display:block;box-sizing:border-box;width:100%;padding:13px 14px;cursor:pointer;transition:background .15s; }
+  .meetingrow + .meetingrow { box-shadow:inset 0 .5px 0 var(--line); }
+  .meetingrow:hover { background:var(--sel); }
+  .meetingrow:focus-visible,.meetingrow.selected { background:rgba(10,132,255,.12);outline:none;box-shadow:inset 2px 0 0 var(--accent); }
+  .meetingrow b { display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+  .meetingrow small { display:block;margin:4px 0;font-size:11px;color:var(--fg3);font-variant-numeric:tabular-nums; }
+  .meetingrow span { display:block;font-size:12px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+  #meetingdetail { animation:rise .24s var(--out); }
+  #meetingdetail h1 { overflow-wrap:anywhere;margin-top:14px; }
+  #meetingmeta { color:var(--fg3);font-size:12px;margin:8px 0 16px; }
+  #meetingdetail .tools { display:flex;gap:8px;align-items:center;flex-wrap:wrap; }
+  #meetingdetail .tools .red { margin-left:auto; }
+  #meetingsummary,#meetingactions,#meetingnotes,#meetinganswers { white-space:pre-wrap;line-height:1.6;overflow-wrap:anywhere;padding:14px;-webkit-user-select:text; }
+  .savedline { display:flex;gap:14px;padding:10px 14px;line-height:1.55;-webkit-user-select:text; }
+  .savedline + .savedline { box-shadow:inset 0 .5px 0 var(--line); }
+  .savedline time { color:var(--fg3);font-size:11px;flex:none;font-variant-numeric:tabular-nums;padding-top:2px; }
+  .savedline div { min-width:0;overflow-wrap:anywhere;white-space:pre-wrap; }
+  .savedline b { display:block;color:var(--fg2);font-size:11px;font-weight:500;margin-bottom:2px; }
+  #meetingmessage { font-size:12px;color:var(--fg2);margin:12px 0; }
+  @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important;transition:none!important; } }
+  body.reduce * { animation:none!important;transition:none!important; }
+  .meeting-controls { margin:0 0 18px; }
+  .meeting-controls summary { color:var(--fg2);cursor:pointer;padding:10px 2px;font-weight:500; }
+  .meeting-controls summary:focus-visible { outline:2px solid var(--accent);border-radius:5px; }
+  .row:has([data-k="meetingAuto"]) { flex-direction:column;align-items:flex-start;gap:8px; }
 </style></head><body>
 
 <nav>
@@ -156,6 +186,7 @@
   <button data-s="brain"><i class="ni" style="background:#d97757"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg></i>Intelligence</button>
   <button data-s="screen"><i class="ni" style="background:#bf5af2"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/></svg></i>Screen &amp; Windows</button>
   <button data-s="memory"><i class="ni" style="background:#ff9f0a"><svg viewBox="0 0 24 24"><path d="M6 4h12v16l-6-4-6 4z"/></svg></i>Memory</button>
+  <button data-s="meetings"><i class="ni" style="background:#5e5ce6"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h7"/></svg></i>Meetings</button>
   <button data-s="integrations"><i class="ni" style="background:#bf5af2"><svg viewBox="0 0 24 24"><path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-5h-6v5H5a1 1 0 0 1-1-1z"/></svg></i>Integrations</button>
   <button data-s="usage"><i class="ni" style="background:#30d158"><svg viewBox="0 0 24 24"><path d="M5 19V11M12 19V5M19 19v-6"/></svg></i>Usage</button>
   <button data-s="apps"><i class="ni" style="background:#ff453a"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6"/></svg></i>Apps</button>
@@ -265,6 +296,34 @@
     <div class="group" id="skills"></div>
   </section>
 
+  <section id="meetings">
+    <div id="meetingbrowse">
+      <h1>Meetings</h1><p class="lede">A little context, whenever you need it. Saved on this PC.</p>
+      <details class="meeting-controls"><summary>Meeting Copilot settings</summary><div class="group">
+      <div class="row"><div class="t"><b>Meeting Copilot</b><span>Hear a call (this PC’s sound) and your microphone in a private panel, transcribed on this PC. On supported calls, listening ends two seconds after the app releases the mic.</span></div><label class="sw"><input type="checkbox" data-k="meeting" aria-label="Meeting Copilot"></label></div>
+      <div class="row"><div class="t"><b>Save meeting transcripts</b><span>Keep local transcripts, notes and answers. At the end, choose Save or Don’t save. Turning off offers to keep or delete past meetings.</span></div><label class="sw"><input type="checkbox" data-k="meetingSave" aria-label="Save meeting transcripts"></label></div>
+      <div class="row"><div class="t"><b>AI meeting summaries</b><span>Claude reads the transcript once for a recap and action items. Off: a local recap; no transcript is sent for summaries.</span></div><label class="sw"><input type="checkbox" data-k="meetingSummary" aria-label="AI meeting summaries"></label></div>
+      <div class="row"><div class="t"><b>Notice when you’re in a call</b><span>When Zoom, Teams, Slack, Discord, WhatsApp or a browser call (Meet) has used your mic for a few seconds, a small card asks if Atticus should listen.</span></div><label class="sw"><input type="checkbox" data-k="meetingDetect" aria-label="Notice when you’re in a call"></label></div>
+      <div class="row"><div class="t"><b>Answer questions on its own</b><span>It spots questions (a “?”, a question word, or your name). “When it’s sure” answers only from your context, the call, or plain facts.</span></div><div class="seg" data-k="meetingAuto" aria-label="Answer questions on its own"><button data-v="sure">When it’s sure</button><button data-v="always">Always</button><button data-v="ask">Ask me first</button></div></div>
+      <div class="row"><div class="t"><b>Try a demo meeting</b><span>Two voices, about a minute. Demo context loads for you.</span></div><button class="btn" data-do="meetingDemo" id="meetingDemo">Try Demo</button></div>
+      </div></details>
+      <input type="search" id="meetingq" placeholder="Search titles and transcripts" aria-label="Search meetings" autocomplete="off">
+      <div id="meetingcount" role="status">Loading meetings…</div>
+      <div id="meetinglist" class="group" role="list" aria-label="Saved meetings"></div>
+    </div>
+    <div id="meetingdetail" hidden>
+      <button id="meetingback" class="btn">← All meetings</button><h1 id="meetingtitle" tabindex="-1"></h1><p id="meetingmeta"></p>
+      <div class="tools"><button id="meetingcopy" class="btn">Copy</button><button id="meetingexport" class="btn">Export Markdown</button><button id="meetingdelete" class="btn red">Delete</button></div>
+      <h3>Summary</h3><div id="meetingsummary" class="group"></div>
+      <div id="meetingactionblock" hidden><h3>Action items</h3><div id="meetingactions" class="group"></div></div>
+      <div id="meetingnoteblock" hidden><h3>Notes</h3><div id="meetingnotes" class="group"></div></div>
+      <div id="meetinganswerblock" hidden><h3>Copilot answers</h3><div id="meetinganswers" class="group"></div></div>
+      <h3>Transcript</h3><div id="meetingtranscript" class="group"></div>
+    </div>
+    <p id="meetingmessage" role="status" hidden></p>
+  </section>
+
+
   <section id="integrations">
     <h1>Integrations</h1>
     <p class="lede">Your own servers. Set up the ones you run: Atticus only mentions a service to the AI when you ask about it, so each one costs nothing until you use it. Keys stay in Windows Credential Manager on this PC.</p>
@@ -367,6 +426,7 @@
     document.querySelectorAll('nav button, section').forEach(e => e.classList.remove('on'));
     b.classList.add('on'); $(b.dataset.s).classList.add('on');
     if (b.dataset.s === 'apps') post({ do: 'apps' });
+    if (b.dataset.s === 'meetings') { meetingBack(false); requestMeetings(); }
     if (b.dataset.s === 'integrations') post({ do: 'integrations' });   // fresh list and statuses each visit
   });
   document.querySelectorAll('[data-do]').forEach(b => b.onclick = () => post({ do: b.dataset.do }));
@@ -407,6 +467,7 @@
                 opus: 'Most capable. Slowest; uses your plan fastest.' };
   function paint() {
     if (!recording) showCaps(P.hotkeyLabel);
+    $('meetingDemo').disabled = !P.meeting;
     $('reset').style.display = (P.hotkeyLabel === 'Ctrl+Alt+Space' || P.hotkeyLabel === '⌃⌥Space') ? 'none' : '';
     document.querySelectorAll('.seg[data-k]').forEach(g => g.querySelectorAll('button').forEach(b => {
       const on = P[g.dataset.k] === b.dataset.v; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
@@ -522,6 +583,53 @@
     $('ownres').textContent = 'Testing…';
     post({ do: 'intCustom', values });
   };
+  let expectedMeeting=null, savedMeetings=[], currentMeeting=null, meetingMarkdown='', selectedMeeting=0, meetingQueryTimer, detailScroll=0;
+  const meetingDate=s=>new Date(s*1000).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  const meetingDuration=s=>s<60?`${Math.floor(s)} sec`:s<3600?`${Math.floor(s/60)} min`:`${Math.floor(s/3600)} hr ${Math.floor(s/60)%60} min`;
+  const meetingTime=s=>[Math.floor(s/3600),Math.floor(s/60)%60,Math.floor(s)%60].map(n=>String(n).padStart(2,'0')).join(':');
+  const meetingNotice=text=>{ $('meetingmessage').textContent=text; $('meetingmessage').hidden=!text; };
+  function requestMeetings(){ clearTimeout(meetingQueryTimer);post({do:'meetings',query:$('meetingq').value.trim()}); }
+  function selectMeeting(index,focus=false){
+    const rows=[...$('meetinglist').querySelectorAll('.meetingrow')];selectedMeeting=Math.max(0,Math.min(index,rows.length-1));
+    rows.forEach((b,i)=>{b.classList.toggle('selected',i===selectedMeeting);b.tabIndex=i===selectedMeeting?0:-1});if(focus)rows[selectedMeeting]?.focus();
+  }
+  function paintMeetings(){
+    const query=$('meetingq').value.trim();$('meetingcount').textContent=`${savedMeetings.length} meeting${savedMeetings.length===1?'':'s'}${query?' found':''}`;
+    $('meetinglist').replaceChildren();
+    if(!savedMeetings.length){const empty=document.createElement('div');empty.className='empty';empty.textContent=query?'No meetings match. Try another word or date.':'Your meetings will appear here after you start listening with transcript saving on.';$('meetinglist').append(empty);return;}
+    savedMeetings.forEach((m,i)=>{const b=document.createElement('button');b.className='meetingrow';b.setAttribute('role','listitem');
+      const title=document.createElement('b'),meta=document.createElement('small'),summary=document.createElement('span');title.textContent=m.title;
+      meta.textContent=[meetingDate(m.started),meetingDuration(m.duration),m.app].filter(Boolean).join(' · ');summary.textContent=m.summary?.split('\n')[0]||m.status;
+      b.append(title,meta,summary);b.onclick=()=>{expectedMeeting=m.id;selectMeeting(i);detailScroll=document.querySelector('main').scrollTop;post({do:'meetingOpen',id:m.id});};b.onfocus=()=>selectMeeting(i);$('meetinglist').append(b);
+    });selectMeeting(selectedMeeting);
+  }
+  function meetingBack(focus=true){expectedMeeting=null;currentMeeting=null;meetingMarkdown='';$('meetingbrowse').hidden=false;$('meetingdetail').hidden=true;meetingNotice('');document.querySelector('main').scrollTop=detailScroll;if(focus)selectMeeting(selectedMeeting,true);}
+  function openMeeting(m,markdown){
+    currentMeeting=m;meetingMarkdown=markdown;$('meetingbrowse').hidden=true;$('meetingdetail').hidden=false;meetingNotice('');
+    $('meetingtitle').textContent=m.title;$('meetingmeta').textContent=[meetingDate(m.started),meetingDuration(m.duration),m.app,m.status].filter(Boolean).join(' · ');
+    $('meetingsummary').textContent=m.summary||'A recap is not available yet. The transcript is below.';
+    $('meetingactionblock').hidden=!m.action_items?.length;$('meetingactions').textContent=(m.action_items||[]).map(t=>'• '+t).join('\n');
+    $('meetingnoteblock').hidden=!m.notes;$('meetingnotes').textContent=m.notes||'';
+    $('meetinganswerblock').hidden=!m.answers?.length;$('meetinganswers').textContent=(m.answers||[]).map(r=>(r.question||'')+'\n'+(r.lines||[]).join('\n')).join('\n\n');
+    $('meetingtranscript').replaceChildren();
+    for(const r of m.transcript||[]){const line=document.createElement('div');line.className='savedline';const time=document.createElement('time'),body=document.createElement('div'),speaker=document.createElement('b'),text=document.createElement('span');
+      time.textContent=meetingTime(r.seconds||0);speaker.textContent=(r.speaker||'Them')+(r.recovered?' · unfinished speech':'');text.textContent=r.text;body.append(speaker,text);line.append(time,body);$('meetingtranscript').append(line);}
+    if(!m.transcript?.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='No speech captured.';$('meetingtranscript').append(empty);}
+    document.querySelector('main').scrollTop=0;$('meetingtitle').focus();
+  }
+  $('meetingq').oninput=()=>{clearTimeout(meetingQueryTimer);meetingQueryTimer=setTimeout(requestMeetings,160)};
+  $('meetingback').onclick=()=>meetingBack();
+  $('meetingcopy').onclick=()=>post({do:'meetingCopy',text:meetingMarkdown});
+  $('meetingexport').onclick=()=>{if(currentMeeting)post({do:'meetingExport',id:currentMeeting.id})};
+  $('meetingdelete').onclick=()=>{if(currentMeeting)post({do:'meetingDelete',id:currentMeeting.id})};   // native confirmation owns the deletion
+  document.addEventListener('keydown',e=>{
+    if(!$('meetings').classList.contains('on'))return;
+    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='f'){e.preventDefault();if(currentMeeting)meetingBack(false);$('meetingq').focus();$('meetingq').select();return;}
+    if(e.key==='Escape'){e.preventDefault();if(currentMeeting)meetingBack();else if($('meetingq').value){$('meetingq').value='';requestMeetings();}else $('meetingq').blur();return;}
+    if(currentMeeting||e.target.closest?.('textarea')||e.target.closest?.('input:not(#meetingq)')||e.metaKey||e.ctrlKey||e.altKey)return;
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();selectMeeting(selectedMeeting+(e.key==='ArrowDown'?1:-1),true);}
+    if(e.key==='Enter'&&e.target===$('meetingq')){e.preventDefault();$('meetinglist').querySelectorAll('.meetingrow')[selectedMeeting]?.click();}
+  });
   window.st = {
     ownResult(text) {
       $('ownres').textContent = text;
@@ -554,6 +662,13 @@
         if (rm) rm.onclick = () => { if (confirm('Remove ' + g.querySelector('b').textContent + '? Its saved key is deleted too.')) post({ do: 'intRemove', name: g.dataset.int }); };
       });
     },
+    meetings(result){
+      if(result.error){meetingNotice(result.error);$('meetingcount').textContent='Could not load meetings.';return;}
+      if(result.notice){meetingNotice(result.notice);return;}
+      if(result.deleted){if(currentMeeting?.id===result.deleted)meetingBack(false);requestMeetings();return;}
+      if(result.meeting){if(expectedMeeting===result.meeting.id)openMeeting(result.meeting,result.markdown);return;}
+      if(Array.isArray(result.meetings)){if(result.query!==undefined&&result.query!==$('meetingq').value.trim())return;savedMeetings=result.meetings;selectedMeeting=0;paintMeetings();}
+    },
     intResult([name, text]) { const g = $('ints').querySelector(`[data-int="${name}"]`); if (g) { g.querySelector('.fill').hidden = false; g.querySelector('.intres').textContent = text; } },
     perms(p) {   // each row shows Allowed or its Allow button
       document.querySelectorAll('[data-g]').forEach(b => { b.hidden = !!p[b.dataset.g]; b.previousElementSibling.hidden = !p[b.dataset.g]; });
@@ -572,7 +687,7 @@
     allowDone() { asking = 0; post({ do: 'apps' }); },
     load(d) {
       if (d.sounds && d.sounds.length) { SOUNDS = d.sounds; P = d.prefs || P; fillSounds(); }
-      P = {talkMode: 'hold', ...d.prefs}; recording = false;
+      P = {talkMode: 'hold', meetingSave: true, meetingSummary: true, meetingDetect: true, meetingAuto: 'sure', ...d.prefs}; recording = false;
       $('shortcut').classList.remove('rec'); $('change').textContent = 'Change Shortcut';
       if (d.icon) $('icon').src = $('bigicon').src = d.icon;
       $('ver').textContent = $('aboutver').textContent = d.version ? 'Version ' + d.version : 'Atticus';

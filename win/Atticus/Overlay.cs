@@ -350,6 +350,7 @@ addEventListener('DOMContentLoaded', () => {
         if (shortcutDown) return;   // one action per physical press
         shortcutDown = true;
         if (Prefs.Bool("paused")) return;
+        if (Program.Meeting.Running) { Program.Meeting.Focus(); return; }   // in a meeting the shortcut opens its panel (its own ask box)
         if (Voice.Shush()) return;
         if (listening) { if (toggleTalk) StopListening(); else Dismiss(); return; }
         if (busy) { Cancel(); return; }
