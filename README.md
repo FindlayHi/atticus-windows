@@ -53,7 +53,7 @@
 </tr>
 <tr>
 <td valign="top"><h3>Private ears</h3>Whisper turns your voice into text on your PC. Audio never leaves it.</td>
-<td valign="top"><h3>Your whole PC</h3>Apps, windows across every display, files (Windows Search), the clipboard, the web and the screen. Buttons and menus inside apps through Windows' own UI Automation, with no mouse moves.</td>
+<td valign="top"><h3>Your whole PC</h3>Apps, windows across every display, files (Windows Search), the clipboard, the web and the screen. Hands inside apps through Windows' own UI Automation: it reads the front window as a compact map, then clicks, opens menu paths ("File > Save as"), scrolls, types, presses keys and drags, mostly with no mouse moves. Anything that sends, buys or deletes waits for your Allow.</td>
 <td valign="top"><h3>Safe by default</h3>Before anything deletes, sends, buys, changes a file or runs a system command, Atticus asks you first. Pressing a button named "Send" or "Delete" asks too. <code>rm</code>, <code>del</code>, <code>format</code> and shutdown are always blocked. Deletes go to the Recycle Bin. Every exact command is in the ask log.</td>
 </tr>
 </table>
@@ -171,8 +171,8 @@ Fixes to the brain or the pages that aren't Windows-specific are worth sending u
 Merged from atticus-mac up to `eba8597` (2026-10-13). These Mac features weren't ported; their files are left out of this fork so a merge never ships them half-working:
 
 - Meeting Copilot (call audio needs WASAPI loopback instead of ScreenCaptureKit)
-- Background work with a live mini screen (page reading and clicking in Chrome and Edge is ported, see Web pages)
-- Native "hands" (clicks, typing, scrolling through Accessibility); `atticus --ui` covers part of it with UI Automation
+- Background work with a live mini screen
+- Hands extras: the top-right menu bar icons (no system tray equivalent yet) and the mini screen that follows a click; Electron apps that hide their accessibility tree get pictures instead of a map
 - Contacts lookup, the Report feedback window, and the Apple speech model picker
 
 When merging upstream again, resolve `atticus.py`, `ui/settings.html` and `ui/onboarding.html` by hand, and `git rm` the Mac-only files.
