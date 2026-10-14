@@ -210,7 +210,8 @@ addEventListener('DOMContentLoaded', () => {
         }
         catch { }
         Native.GetWindowThreadProcessId(h, out var a); Native.GetWindowThreadProcessId(mine, out var b);
-        if (a == b) return false;   // the user's own app opened a window (a dialog, a second window)
+        if (a == b && Native.GetWindow(h, 4) != IntPtr.Zero) return false;   // GW_OWNER: a dialog of the user's own window
+        // (a new top-level window of the same app, like the browser window Atticus opened behind, still goes back)
         BeginInvoke(() => Native.Bring(mine));
         return true;
     }
