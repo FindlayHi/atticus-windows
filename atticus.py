@@ -56,6 +56,7 @@ PREFS = os.path.join(DIR, 'settings.json')   # written by the Settings window
 if winctl:
     winctl.APPS_FILE = os.path.join(DIR, 'apps.json')
     winctl.UI_FILE = os.path.join(DIR, 'ui.json')
+    winctl.ON_BRING = lambda: free_focus()   # every deliberate raise tells Atticus.exe's focus guard it's on purpose
 integrations.CONFIG = os.path.join(DIR, 'integrations.json')
 # $5 once, sold on Gumroad. shortcut: the source is public, so a coder can delete this check; fine for a $5 app.
 GUMROAD_PRODUCT = ''   # Gumroad product ID; empty = free
@@ -118,7 +119,7 @@ Tools (atticus is a command on your PATH):
 - See the user's screen: when the request is about it, a labeled picture of each of the user's screens comes with the request: use the one the user means ("my monitor" = the external one; "my screen" with no hint = the one the user's front window is on), don't take another. Otherwise run {LOOK} (prints image paths), then Read that path.
 - The app, window or tab the request is about is not on screen: never say you can't see it and never ask the user to bring it up; run {FRONT} "<app>" "<words from the window title>" (brings it forward, prints fresh screen pictures), Read the right one, then answer.
 - Web (free, use first): {SEARCH} "<query>" -> top 5 titles, urls, snippets, plus the start of the top 3 pages (usually enough: answer from it). {READ} "<url>" -> that page as text. WebSearch/WebFetch only if those fail.
-- Open anything for the user (page, file, app, ms-settings: page): {SHOW} "<url | path | app name>". It opens where the user's Settings say; don't open or focus it again.
+- Open (page, file, app, ms-settings: page): {SHOW} "<url | path | app name>"; it opens behind unless asked to show it: use {HANDS}, never start. Don't reopen it.
 - A web page in the user's Chrome or Edge: {WEB} read|click <n>|fill <n> "<text>"|wait (read first: text + numbered controls; chain with ;). On web pages use it first, before the screen.
 - The user's files (Windows Search): {FIND} "budget" (by name) | {FIND} "photosynthesis" --content (by what's inside) | add --in ~/Documents to narrow it.
 - Weather: curl -s 'wttr.in/<place>?format=%l:+%C+%t+(feels+%f),+wind+%w&u'
@@ -307,6 +308,12 @@ def gate():
         print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
                           'permissionDecisionReason': 'Use atticus --hands; its internals and safety overrides are not tools.'}}))
         return
+    if not tool.startswith('mcp__'):
+        if ARRANGE.search(cmd): free_focus()   # a move or full screen brings the window forward on purpose
+        if focus_command(cmd) and not wants_focus():
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+                              'permissionDecisionReason': f'Work in the background: {SHOW} opens behind the user\'s app, {UI} works there. Bring windows forward only when asked.'}}))
+            return
     q = (integrations.mcp_risky(tool, inp) if tool.startswith('mcp__') else risky(cmd)) or ('Run outside the safe folder?' if inp.get('dangerouslyDisableSandbox') else '')
     if not q or not os.environ.get('ATTICUS_ASK') or not pref('safe', True):
         return
@@ -439,10 +446,143 @@ def front():
     return app, win
 
 
+def wants_focus(task=None, sites=False):
+    """The user asked to see it (open, show, switch to, focus, bring up, full screen): it may come forward. Else Atticus works behind."""
+    if task is None:
+        task = os.environ.get('ATTICUS_REQUEST', '')
+        ask = os.environ.get('ATTICUS_ASK')
+        if ask:
+            try:
+                with open(os.path.join(ask, 'request'), encoding='utf-8') as f: task = f.read()
+            except OSError: pass
+    if re.search(r'\b(background|behind)\b', task, re.I): return False
+    if sites: return True
+    return any((m[1].lower() != 'open' or re.match(r'\s+\w', task[m.end():]) and not re.search(r'\b(is|are|was|were|be|already)\s*$', task[:m.start()], re.I)) and
+               not re.search(r"\b(don.t|do not|never|without|avoid|no need to)\b[^,;.]*$", task[:m.start()].rsplit(' but ', 1)[-1], re.I)
+               for m in re.finditer(r'\b(open|show|switch to|focus|bring up|bring .{0,40}forward|full ?screen)\b', task, re.I))
+
+
+SEP = (';', '&&', '||', '|', '&')
+
+
+def focus_command(cmd):
+    """A shell command that would pull a window in front of the user: start, explorer, cmd /c start, PowerShell Start-Process or AppActivate."""
+    try: tokens = shlex.split(cmd)
+    except ValueError: return True
+    for i, token in enumerate(tokens):
+        boundary = max((j for j in range(i) if tokens[j] in SEP), default=-1)
+        head = tokens[boundary + 1:i]
+        if head and os.path.basename(head[0]).lower() not in ('env', 'command', 'nohup', 'exec', 'xargs'): continue
+        name = os.path.basename(token).lower().removesuffix('.exe')
+        rest = tokens[i + 1:next((j for j in range(i + 1, len(tokens)) if tokens[j] in SEP), len(tokens))]
+        if name in ('start', 'explorer', 'cygstart'): return True
+        if name == 'cmd' and any(a.lower() == 'start' for a in rest): return True
+        if name in ('powershell', 'pwsh'):
+            script = ' '.join(rest)
+            if re.search(r'\b(start-process|saps|invoke-item|appactivate|setforegroundwindow)\b|(^|[;|{(\s])(start|ii)\s', script, re.I) and not re.search(r'-windowstyle\s+(hidden|minimized)', script, re.I): return True
+    return False
+
+
+ARRANGE = re.compile(r'--place\b|--front\b|\bSW_?(MAXIMIZE|RESTORE)\b', re.I)   # arranging windows is work the user sees
+
+
+def free_focus():
+    """Atticus.exe's focus guard stands aside for 3 s: a move, a click that needs the mouse, or "show me" brings a window forward on purpose."""
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        open(os.path.join(DIR, 'raise'), 'w').close()
+    except OSError: pass
+
+
+def allow_focus(task):
+    """For this whole ask: the user asked to see something, so the guard lets apps come forward (Atticus.exe clears it per ask)."""
+    f = os.path.join(DIR, 'focus')
+    try:
+        if wants_focus(task): os.makedirs(DIR, exist_ok=True); open(f, 'w').close()
+        elif os.path.exists(f): os.remove(f)
+    except OSError: pass
+
+
+def window_target(app, title='', hwnd=None, wait=0):
+    """{pid, windowID, windowFrame, app, window, exe} of the window the mini screen should show, or None."""
+    for _ in range(max(1, int(wait * 10))):
+        ws = [w for w in winctl.windows() if w['hwnd'] == hwnd] if hwnd else title and winctl.find(app, title) or winctl.find(app)
+        if ws or not wait: break
+        time.sleep(0.1)
+    if not ws: return None
+    x, y, w, h = winctl.frame(ws[0]['hwnd'])
+    if w <= 0 or h <= 0: return None
+    return {'pid': winctl.pid_of(ws[0]['hwnd']), 'windowID': str(ws[0]['hwnd']), 'windowFrame': [x, y, w, h],
+            'app': ws[0]['app'], 'window': ws[0]['title'], 'exe': ws[0]['exe']}
+
+
+def preview_app(app, action='work', title='', hwnd=None, wait=0, point=None):
+    """The mini screen follows the window Atticus works in: "▣ {json}" to the box (point: "@ x y" where it clicked or typed)."""
+    if not winctl or not (app or hwnd) or os.environ.get('ATTICUS_LIVE') == '1': return None
+    try: target = window_target(app, title, hwnd, wait)
+    except (OSError, ValueError): return None
+    if target:
+        emit(['▣ ' + json.dumps({**target, 'action': action})] + ([f'@ {point[0]} {point[1]}'] if point and pref('miniScreen', True) else []))
+    return target
+
+
+def preview_ui(action, i=None):
+    """After {UI} see/click/set: the window of the last see, and where the element is."""
+    try: saved = json.load(open(winctl.UI_FILE, encoding='utf-8'))
+    except (OSError, ValueError, TypeError, AttributeError): return None
+    it = saved.get('items', {}).get(i) if i else None
+    r = it and it.get('rect')
+    return preview_app(saved.get('app', ''), action, hwnd=saved.get('hwnd'), point=r and [(r[0] + r[2]) // 2, (r[1] + r[3]) // 2])
+
+
+def emit(lines):
+    """To the box: straight out, or (inside the AI's tools) through the ask folder, where relay() passes it on in order."""
+    for line in lines[:1]:
+        if line.startswith('▣ '):   # "it" next turn means this window, not whatever is in front
+            try:
+                with open(os.path.join(DIR, 'worked.json'), 'w', encoding='utf-8') as f: json.dump({k: json.loads(line[2:]).get(k) for k in ('app', 'window')}, f)
+            except (OSError, ValueError): pass
+    ask = os.environ.get('ATTICUS_ASK')
+    if ask and os.path.isdir(ask):
+        with tempfile.NamedTemporaryFile('w', dir=ask, prefix='.hands-', delete=False, encoding='utf-8') as f:
+            f.write('\n'.join(lines)); name = f.name
+        os.replace(name, os.path.join(ask, f'hands-{time.time_ns()}'))
+    else:
+        for line in lines: say(line[0], line[2:])
+
+
+def relay_hands(ask, lock=threading.Lock()):
+    with lock:   # relay()'s thread and run()'s last pass: each line once
+        for name in sorted(n for n in os.listdir(ask) if n.startswith('hands-')) if os.path.isdir(ask) else []:
+            path = os.path.join(ask, name)
+            try:
+                with open(path, encoding='utf-8') as f: lines = f.read().splitlines()
+                os.remove(path)
+            except OSError: continue
+            for line in lines: say(line[0], line[2:])
+
+
+def keep_behind(mine, app, wait=1.5):
+    """Give focus back to the user's window if `app` jumped forward by itself (a launch, a browser tab);
+    never undo a switch to some other app the user made. Atticus.exe's own guard does this when it runs the ask."""
+    if not mine or not app or os.environ.get('ATTICUS_FOCUS_GUARD') == '1': return
+    for _ in range(int(wait * 10)):   # some apps come forward late
+        time.sleep(0.1)
+        now, _, h = winctl.front()
+        if h and h != mine and winctl.key(now) == winctl.key(app):
+            winctl.bring(mine); return
+
+
 def restore_focus(app, task, cmds):
-    if re.search(r'\b(switch|focus|go to|bring|full ?screen|close|quit|exit)\b', task.lower()) or any(
-            FRONT in c or (SHOW in c and pref('openOn', 'here') == 'here') for c in cmds):
+    """After the task: if a window this task touched is in front, the user's app comes back. Not when the user asked to see it,
+    closed something, or switched to another app themselves."""
+    if wants_focus(task) or re.search(r'\b(close|quit|exit|go to)\b', task, re.I) or any(FRONT in c for c in cmds) or \
+            pref('workIn', 'back') == 'front' and re.search(r'--show\b.*https?://', ' '.join(cmds)):
         return
+    now = winctl.front()[0]
+    try: worked = json.load(open(os.path.join(DIR, 'worked.json'), encoding='utf-8')).get('app', '')
+    except (OSError, ValueError, AttributeError): worked = ''
+    if not now or winctl.key(now) == winctl.key(app) or not (now.lower() in ' '.join(cmds).lower() or now == worked): return
     winctl.focus_app(app)   # only a window that is already open: never relaunch the app
 
 
@@ -455,8 +595,11 @@ def is_url(t):
     return bool(re.match(r'^[a-z][a-z0-9+.-]*:(//)?\S', t, re.I)) and not re.match(r'^[a-z]:[\\/]', t, re.I)
 
 
-def show(target):
-    """Open a URL, file or app where the user can see it; on the other screen (Settings), hand focus back to the user's app."""
+def show(target, bg=False):
+    """Open a URL, file or app where the user can see it; on the other screen (Settings), hand focus back to the user's app.
+    bg: something Atticus works in by itself opens behind, so the user keeps working (the mini screen shows it)."""
+    if bg:
+        return show_behind(target)
     mine, _ = front()
     t = os.path.expanduser(target.strip())
     app = None
@@ -484,6 +627,30 @@ def show(target):
             place(app, 'center', other)
         winctl.focus_app(mine)
     return f'opened {target} in {app or "its app"}' + (f' on {other}; focus back on {mine}' if other else '') + ready
+
+
+def show_behind(target):
+    """Open behind the user's app; the window it lands in goes to the mini screen. Settings → Work on sites: In front shows pages."""
+    t = os.path.expanduser(target.strip())
+    ahead = bool(re.match(r'^https?://', t, re.I)) and pref('workIn', 'back') == 'front'
+    mine = winctl.front()[2]
+    if ahead:
+        free_focus()   # the browser may come forward
+    try:
+        if is_url(t) or os.path.exists(t):
+            os.startfile(t)
+            app = winctl.opener(t)
+        else:
+            app = app_named(t) or t
+            if not winctl.launch(app):
+                return f'no app or file called "{target}"'
+    except OSError as e:
+        return f'could not open {target}: {e.strerror or e}'
+    title = os.path.splitext(os.path.basename(t))[0] if os.path.isfile(t) else ''
+    w = preview_app(app, 'open', title, wait=3) if app else None
+    if not ahead:
+        keep_behind(mine, w['app'] if w else app)
+    return f'opened {target} ' + ('in front' if ahead else 'in the background')
 
 
 NUMS = dict(zip('zero one two three four five six seven eight nine ten'.split(), map(str, range(11))))
@@ -889,6 +1056,7 @@ def fast(text):
         site, q = m[1] or m[3], urllib.parse.quote(m[2])
         target = {'youtube': f'https://www.youtube.com/results?search_query={q}', 'spotify': f'spotify:search:{q}',
                   'amazon': f'https://www.amazon.com/s?k={q}'}.get(site, f'https://www.google.com/search?q={q}')
+        free_focus()
         os.startfile(target)
         fast.cmds = [f'{SHOW} {shlex.quote(target)}']
         return f'Searched {m[2]}' + (f' on {site.title()}.' if site in ('youtube', 'spotify', 'amazon') else '.')
@@ -916,16 +1084,19 @@ def fast(text):
         site = next((w.rstrip('.,!') for w in text.split() if plain(w) == target), site)
         if re.fullmatch(r'(?:https?://)?[\w-]+(\.[\w-]+)+(/\S*)?', site) and not re.search(r'\.(pdf|docx?|xlsx?|pptx?|txt|csv|png|jpe?g|heic|key|pages|numbers|zip|mp[34]|mov|md|py|java)$', target):
             url = site if site.startswith(('https://', 'http://')) else 'https://' + site
+            free_focus()
             os.startfile(url)
             fast.cmds = [f'{SHOW} {shlex.quote(url)}']
             return f'Opened {target}.'
         if target in URIS and not app_named(target):   # Windows' own pages
+            free_focus()
             os.startfile(URIS[target])
             fast.cmds = [f'{SHOW} {shlex.quote(URIS[target])}']
             return f'Opened {target.title()}.'
         app = app_named(target)
         if not app:
             return None
+        free_focus()   # asked for: Atticus.exe's focus guard lets it come forward
         if pref('openOn', 'here') == 'other':
             show(app)   # Settings: open on the other screen and keep focus (slower, ~1-3 s)
         elif not open_app(app):   # plain open, ~0.1 s: here and in front
@@ -1393,7 +1564,7 @@ def label(name, inp):
     if c.startswith(READ):
         return 'Reading ' + re.sub(r'^https?://(www\.)?([^/]+).*', r'\2', c[len(READ):].strip(' "\''))
     if c.startswith(SHOW):
-        t = c[len(SHOW):].strip(' "\'')
+        t = re.sub(r'^\s*--bg\b', '', c[len(SHOW):]).strip(' "\'')
         return 'Opening ' + (re.sub(r'^https?://(www\.)?([^/]+).*', r'\2', t) if '://' in t else os.path.basename(t))
     if c.startswith(ABOUT):
         return 'Noting that about you'
@@ -1714,10 +1885,7 @@ def relay(p):
     """Passes the gate's question to the box ("? <question>\t<command>\t<answer file>"), or a dialog when there is no box."""
     q = os.path.join(p.ask, 'q')
     while p.poll() is None:
-        for name in sorted(n for n in os.listdir(p.ask) if n.startswith('hands-')) if os.path.isdir(p.ask) else []:
-            with open(os.path.join(p.ask, name), encoding='utf-8') as f:
-                for line in f.read().splitlines(): say(line[0], line[2:])   # "@ x y": the ring where a hands step acted
-            os.remove(os.path.join(p.ask, name))
+        relay_hands(p.ask)   # "▣ {json}" from the AI's tools: the mini screen
         if os.path.exists(q):
             j = json.load(open(q))
             os.remove(q)
@@ -1753,6 +1921,8 @@ def run(task, p=None, shots=()):
         return plan()['text'] + ' Atticus setup is open to fix it.', 0, []
     content = [b for path, label in shots if os.path.exists(path) for b in ({'type': 'text', 'text': label}, {'type': 'image', 'source': {
         'type': 'base64', 'media_type': 'image/jpeg', 'data': base64.b64encode(open(path, 'rb').read()).decode()}})] + [{'type': 'text', 'text': task}]
+    if getattr(p, 'ask', ''):   # the gate reads it: did the user ask to see something?
+        with open(os.path.join(p.ask, 'request'), 'w', encoding='utf-8') as f: f.write(task.rpartition('Request: ')[2] or task)
     p.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': content}}) + '\n')
     p.stdin.close()
     if getattr(p, 'ask', ''):
@@ -1785,6 +1955,7 @@ def run(task, p=None, shots=()):
             result_error = bool(j.get('is_error'))
             reply, cost = (j.get('result') or '').strip(), j.get('total_cost_usd', 0)
     p.wait()
+    if getattr(p, 'ask', ''): relay_hands(p.ask)
     run.ran = cmds   # the exact commands, for the ask log
     if not reply and p.returncode:
         c = plan()   # the usual cause: not installed, signed out, or no paid plan
@@ -1871,17 +2042,6 @@ def cached_hands():
     try:
         with open(hands_state(), encoding='utf-8') as f: return json.load(f)
     except (OSError, ValueError): return None
-
-
-def emit(lines):
-    """The ring where a step acted: straight to the box from Atticus itself, through the ask folder from the AI's helpers."""
-    ask = os.environ.get('ATTICUS_ASK')
-    if not ask:
-        for line in lines: say(line[0], line[2:])
-        return
-    with tempfile.NamedTemporaryFile(mode='w', dir=ask, prefix='.hands-', delete=False, encoding='utf-8') as f:
-        f.write('\n'.join(lines)); name = f.name
-    os.replace(name, os.path.join(ask, f'hands-{time.time_ns()}'))
 
 
 def hands(*args):
@@ -2252,6 +2412,7 @@ def main():
         app = rest[1] if rest[:1] == ['--in'] and len(rest) > 1 else front()[0]
         rest = rest[2:] if rest[:1] == ['--in'] else rest
         typing_save(TYPE)
+        if args[1:2] == ['--in']: preview_app(app, 'type')
         return print(winctl.paste_into(app, ' '.join(rest)))
     if args[:1] == ['--find']:
         rest, content, where = args[1:], '--content' in args, ''
@@ -2260,11 +2421,15 @@ def main():
         hits = winctl.find_files(' '.join(a for a in rest if a != '--content'), content, where)
         return print('\n'.join(hits) or 'nothing found')
     if args[:2] == ['--ui', 'see'] and len(args) > 2:
-        return print(winctl.ui_see(args[2], ' '.join(args[3:])))
+        out = winctl.ui_see(args[2], ' '.join(args[3:]))
+        preview_ui('read')
+        return print(out)
     if args[:2] == ['--ui', 'click'] and len(args) > 2:
+        preview_ui('click', args[2])
         return print(winctl.ui_click(*args[2:]))
     if args[:2] == ['--ui', 'set'] and len(args) > 3:
         typing_save(f'{UI} set {args[2]}')
+        preview_ui('type', args[2])
         return print(winctl.ui_set(args[2], ' '.join(args[3:])))
     if args[:1] == ['--hands']:
         if args[1:2] in (['press'], ['type']): typing_save(HANDS + ' ' + shlex.join(args[1:3]))
@@ -2273,6 +2438,7 @@ def main():
         return sys.exit(0 if ok else 1)
     if args[:1] == ['--keys'] and len(args) == 3:
         typing_save(f'{KEYS} {args[1]} {args[2]}')
+        preview_app(args[1], 'press')
         return print(winctl.hotkey(args[1], args[2]))
     if args == ['--int-custom']:   # Settings → Add your own: values on stdin, one key=value a line (the key never sits in a command line)
         values = dict(l.rstrip('\r\n').split('=', 1) for l in sys.stdin if '=' in l)
@@ -2304,8 +2470,9 @@ def main():
     if args[:1] == ['--windows']:
         ws = winctl.find(' '.join(args[1:])) if args[1:] else winctl.windows()
         return print('\n'.join(f"{w['app']} ({w['proc']}): {w['title']}" for w in ws[:30]) or 'no windows')
-    if args[:1] == ['--show']:
-        return print(show(' '.join(args[1:])))
+    if args[:1] == ['--show']:   # in the AI's tools: behind the user's app unless the user asked to see it (or --bg)
+        bg = args[1:2] == ['--bg']
+        return print(show(' '.join(args[2:] if bg else args[1:]), bg or bool(os.environ.get('ATTICUS_ASK')) and not wants_focus()))
     if args[:1] == ['--remember']:
         os.makedirs(DIR, exist_ok=True)
         with open(MEMORY, 'a') as f:
@@ -2416,6 +2583,7 @@ def main():
     if pref('instant', True) and hands_command(plain(task)):
         mapping.join(2)
         if not wait_commit(): return
+    allow_focus(task)   # before an instant "open X" comes forward
     quick = (not commit or os.path.exists(commit)) and pref('instant', True) and fast(task)
     if quick:
         if warm:
@@ -2433,6 +2601,13 @@ def main():
     if os.environ.get('ATTICUS_CARET') and pref('selection', True):
         ctx += ' The user\'s text cursor is in a text box in the front app; a [draft] can be inserted there.'
     selected = selection_context()
+    try:   # the window the last task worked in, behind the user's app: "click into it" means that one
+        w = os.path.join(DIR, 'worked.json')
+        w = json.load(open(w, encoding='utf-8')) if time.time() - os.path.getmtime(w) < 600 else None
+    except (OSError, ValueError):
+        w = None
+    if isinstance(w, dict) and w.get('app') and w.get('app') != app:
+        ctx += f' Last task worked in: {w["app"]} "{w.get("window") or "?"}".'
     helps = []
     helping = threading.Thread(target=lambda: helps.append(tool_help(task)), daemon=True)
     helping.start()   # beside the screen reads: a cold --help can take up to 2 s
@@ -2552,6 +2727,11 @@ if __name__ == '__main__':
         assert risky('reg add HKCU\\x /v y') == 'Run a system command?' == risky('powershell Stop-Computer') == risky('taskkill /im chrome.exe')
         assert risky('echo x >> ~/.bashrc') == 'Change a file?' == risky('powershell Set-Content a.txt b') and not risky('ls >/dev/null; echo > /tmp/a; dir > $null')
         assert len(SYSTEM.replace('NEVER_RISKY', ASK_FIRST) + ASK_ME + POINTER + LEARN_ME + TEACH + JOPLIN_TOOLS) < 10000
+        assert focus_command('start "" "https://x.com"') and focus_command('cmd //c start notepad') and focus_command('powershell -c "Start-Process notepad"')
+        assert not focus_command(f'{SHOW} "https://x.com"') and not focus_command(f'{NOTE} "start the day"') and not focus_command('powershell -c "Start-Sleep 1"')
+        assert wants_focus('open Notepad') and wants_focus('switch to Chrome') and not wants_focus('add milk to my list') and not wants_focus('open Notepad in the background')
+        assert label('Bash', {'command': f'{SHOW} --bg "https://docs.claude.com"'}) == 'Opening docs.claude.com'
+        assert picks()['workIn'][1]['In front'] == 'front' and 'miniScreen' in switches()
         import io, contextlib
         with contextlib.redirect_stdout(io.StringIO()) as out:
             sys.argv = ['atticus.py', '--help']; main()

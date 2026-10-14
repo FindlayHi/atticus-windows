@@ -28,6 +28,18 @@ static class Program
             Check(TextSelection.Landed("new text", "old", "a new  text b") && !TextSelection.Landed("new", "old", "old") && TextSelection.Landed("", "ab", "a"));
             Check(!TextSelection.Landed("draft", "old", "old changed") && TextSelection.Landed("x", null, "y"));   // unreadable field: nothing to check against
             Check(TextSelection.Splice("say helo there", 4, "helo", "hello") == "say hello there" && TextSelection.Splice("abc", 1, "x", "y") == null && TextSelection.Splice("ab", 2, "", "c") == "abc");
+            var ok = System.Text.Json.Nodes.JsonNode.Parse("{\"pid\":9,\"windowID\":\"4242\",\"windowFrame\":[0,0,800,500]}").AsObject();
+            Check(MiniScreen.Valid(ok, out var h) && h == (IntPtr)4242);
+            foreach (var bad in new[] { "{\"pid\":0,\"windowID\":\"1\",\"windowFrame\":[0,0,1,1]}", "{\"pid\":9,\"windowID\":\"x1\",\"windowFrame\":[0,0,1,1]}", "{\"pid\":9,\"windowID\":\"1\",\"windowFrame\":[0,0,0,1]}", "{\"pid\":9,\"windowID\":\"1\"}" })
+                Check(!MiniScreen.Valid(System.Text.Json.Nodes.JsonNode.Parse(bad).AsObject(), out _));
+            // a 16:10 window in a 16:10 rect at 150%: fills it; half scrolled out of view: the top half of the window
+            var fit = MiniScreen.Fit(new double[] { 10, 20, 160, 100 }, new double[] { 10, 20, 160, 100 }, 1.5, new RectangleF(7, 0, 1600, 1000));
+            Check(fit is { } f1 && f1.dest == Rectangle.FromLTRB(15, 30, 255, 180) && f1.src == Rectangle.FromLTRB(7, 0, 1607, 1000));
+            var half = MiniScreen.Fit(new double[] { 0, 0, 160, 100 }, new double[] { 0, 0, 160, 50 }, 1, new RectangleF(0, 0, 1600, 1000));
+            Check(half is { } f2 && f2.dest == Rectangle.FromLTRB(0, 0, 160, 50) && f2.src == Rectangle.FromLTRB(0, 0, 1600, 500));
+            var tall = MiniScreen.Fit(new double[] { 0, 0, 160, 100 }, new double[] { 0, 0, 160, 100 }, 1, new RectangleF(0, 0, 500, 1000));   // letterboxed, centered
+            Check(tall is { } f3 && f3.dest == Rectangle.FromLTRB(55, 0, 105, 100));
+            Check(MiniScreen.Fit(new double[] { 0, 0, 160, 100 }, new double[] { 0, 200, 160, 0 }, 1, new RectangleF(0, 0, 10, 10)) == null && MiniScreen.Fit(null, null, 1, new RectangleF(0, 0, 10, 10)) == null);
             Console.WriteLine("native selftest ok"); return;
         }
         if (args.Length >= 1 && args[0] == "--selection")   // diagnostics: what the shortcut would read in the front app; --apply "<text>" / --delete puts it there

@@ -36,7 +36,7 @@ static class Prefs
     {
         ["hotkeyCode"] = 0x20, ["hotkeyMods"] = 3, ["hotkeyLabel"] = "Ctrl+Alt+Space", ["login"] = true, ["paused"] = false, ["corner"] = "top-left", ["linger"] = "normal",
         ["soundStart"] = "Speech On", ["soundDone"] = "Windows Notify System Generic", ["soundStop"] = "Speech Off", ["volume"] = 0.3, ["model"] = "haiku", ["instant"] = true,
-        ["ahead"] = true, ["aheadDelay"] = 0.9, ["live"] = true, ["screen"] = "auto", ["openOn"] = "here", ["selection"] = true, ["draftInsert"] = "ask",
+        ["ahead"] = true, ["aheadDelay"] = 0.9, ["live"] = true, ["screen"] = "auto", ["openOn"] = "here", ["selection"] = true, ["draftInsert"] = "ask", ["workIn"] = "back", ["miniScreen"] = true,
         ["speak"] = false, ["autoCopy"] = false, ["hideWhenSharing"] = true, ["menuIcon"] = true, ["autoUpdate"] = true,
         ["learn"] = true, ["safe"] = true, ["pointer"] = false, ["learnMe"] = true, ["stats"] = true, ["tips"] = true, ["askMe"] = true, ["webPages"] = true, ["escalate"] = true, ["escalateAuto"] = false, ["improve"] = false, ["improveAsked"] = false, ["input"] = "voice", ["talkMode"] = "hold",
         ["boxW"] = 460, ["boxH"] = 360, ["speechModel"] = "base.en", ["onboarded"] = false,

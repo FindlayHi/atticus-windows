@@ -175,7 +175,7 @@ class HandsTests(unittest.TestCase):
         def answer(*args):
             atticus.run.ok = True; atticus.run.ran = atticus.run.cmds = []
             return 'Export opened.', 0, []
-        win = Mock(); win.find.return_value = []; win.BROWSERS = ()
+        win = Mock(); win.find.return_value = []; win.BROWSERS = (); win.front.return_value = ('Fixture', 'Window', 0)
         with patch.multiple(atticus, licensed=lambda: True, ping=lambda: None, look=lambda: [], fast=lambda _: None, hands_map=lambda _: rich,
                             front=lambda: ('Fixture', 'Window'), screens=lambda: [], describe=lambda *_: 'Fixture display', me_line=lambda: '',
                             tool_help=lambda _: '', relevant_rules=lambda _: '', workflows=lambda *a: '', recent=lambda: [],
