@@ -64,6 +64,11 @@ addEventListener('DOMContentLoaded', () => {
     List<string> did = new();
     Process proc, fastProc;
     (Process p, StreamWriter input, string commit)? warm;
+    // Selected text or the text cursor in the user's app, read at the shortcut; replacement: what Replace / Insert / Delete puts there.
+    TextSelection selection;
+    string replacement, mode = "replace", warmSel = "", lastAsk = "";   // mode: replace · delete · draft
+    int selectionID;
+    bool selectionPending, replacing;
     DateTime began = DateTime.Now;
     public DateTime lastDone = DateTime.MinValue;
     System.Windows.Forms.Timer holdTimer, pauseItem, aheadItem, quiet;
@@ -160,6 +165,8 @@ addEventListener('DOMContentLoaded', () => {
         if (b.TryGetProperty("type", out _)) { fresh = false; if (listening) Hush(); }   // clicked or typed in the box while listening: stop the mic quietly
         if (b.TryGetProperty("copy", out var cp) && cp.GetString() is { Length: > 0 } a) { try { Clipboard.SetText(a); } catch { } js("copied"); }
         if (b.TryGetProperty("send", out var sd)) Typed(sd.GetString(), true);
+        if (b.TryGetProperty("replace", out _) && !busy) ApplyReplacement();
+        if (b.TryGetProperty("retry", out _) && !busy && !listening && lastAsk != "") Typed(lastAsk, true);
         if (b.TryGetProperty("mic", out _))
         {
             fresh = false;
@@ -270,7 +277,7 @@ addEventListener('DOMContentLoaded', () => {
     {
         speech.Cancel(); Stop(ref pauseItem); Stop(ref holdTimer); Unwarm();
         clickTalk = false; toggleTalk = false; Stop(ref quiet); stops++;
-        listenID++;
+        listenID++; selectionID++; selectionPending = false; replacing = false;
         CancelFast();
         Stop(ref aheadItem); DropAhead();
         Py.Stop(proc); proc = null; askFile = "";
@@ -333,18 +340,21 @@ addEventListener('DOMContentLoaded', () => {
         if (busy) { Cancel(); return; }
         if (fresh && Visible && Opacity > 0) { Dismiss(); return; }
         CancelFast();
+        CaptureSelection(); replacement = null;
         text = ""; ahead = ""; consumed = 0; consumedText = ""; liveRevised = false; did = new();
         if ((!Visible || Opacity == 0) && (DateTime.Now - lastDone).TotalSeconds > 30) { js("reset"); try { File.Delete(Paths.Recent); } catch { } }
         Program.Onboarding.Tried();
         if (Prefs.Str("input") == "type" && !clickTalk)   // Settings: the shortcut opens the box ready to type
         {
             if (composing && Visible) { Dismiss(); return; }
-            ShowBox(); TakeKeys(); js("compose", true);
+            var id0 = selectionID;
+            void open() { if (selectionID != id0) return; ShowBox(); TakeKeys(); js("compose", true); }
+            if (selectionPending) Selected = open; else open();   // the box takes the keyboard only once the selection is read
             return;
         }
         toggleTalk = !clickTalk && Prefs.Str("talkMode") == "toggle";
         Sound.Cue("soundStart");
-        Unwarm(); warm = Spawn();
+        Unwarm(); if (!selectionPending) warm = Spawn();   // else once the selection is read, so the worker has it
         hovering = false;
         js("listen");
         js("shortcut", toggleTalk ? "Press again to send" : clickTalk ? "" : "Release keys to send");
@@ -417,7 +427,7 @@ addEventListener('DOMContentLoaded', () => {
     void StartAhead()
     {
         var r = Rest();
-        if (!listening || fastBusy || liveRevised || r == "" || TranscriptKey(r) == TranscriptKey(ahead)) return;
+        if (!listening || fastBusy || selectionPending || liveRevised || r == "" || TranscriptKey(r) == TranscriptKey(ahead)) return;
         var core = Regex.Replace(r.ToLowerInvariant(), @"^(?:(?:hey|ok|okay|atticus|please|can you|could you|would you|also|and|now|then)[,\s]+)+", "");
         if (Commands.Any(c => core.StartsWith(c + " "))) return;
         DropAhead();
@@ -490,13 +500,15 @@ addEventListener('DOMContentLoaded', () => {
     void Typed(string t, bool keep = false)   // the typing box (keep: it stays open for the next one)
     {
         if (busy || listening || string.IsNullOrWhiteSpace(t)) return;
-        fresh = false; js("listen", keep); ShowBox(); js("words", t); Run(t);
+        if (selectionPending) { var id = selectionID; After(0.05, () => { if (selectionID == id) Typed(t, keep); }); return; }
+        replacement = null;
+        fresh = false; js("listen", keep); ShowSelected(); ShowBox(); js("words", t); Run(t);
     }
 
     void Finish()
     {
         if (!busy) return;   // cancelled while the last words landed
-        if (fastBusy) { var g = stops; After(0.1, () => { if (g == stops) Finish(); }); return; }
+        if (fastBusy || selectionPending) { var g = stops; After(0.05, () => { if (g == stops) Finish(); }); return; }
         Stop(ref aheadItem);
         if (liveRevised)
         {
@@ -525,8 +537,14 @@ addEventListener('DOMContentLoaded', () => {
     {
         var c = Path.Combine(Path.GetTempPath(), "atticus-commit-" + Guid.NewGuid());
         Process p;
-        try { p = Py.Start(new[] { "--wait" }, new() { ["ATTICUS_UI"] = "1", ["ATTICUS_FRONT"] = Hooks.Mine, ["ATTICUS_COMMIT"] = c }, input: true); }
+        var sel = SelKey;
+        try
+        {
+            p = Py.Start(new[] { "--wait" }, new() { ["ATTICUS_UI"] = "1", ["ATTICUS_FRONT"] = Hooks.Mine, ["ATTICUS_COMMIT"] = c,
+                ["ATTICUS_SELECTION"] = sel == "\u0001" ? "" : sel, ["ATTICUS_CARET"] = sel == "\u0001" ? "1" : "" }, input: true);
+        }
         catch { return null; }
+        warmSel = sel;
         p.OutputDataReceived += (_, e) => { if (e.Data != null) BeginInvoke(() => OnLine(p, e.Data)); };
         p.ErrorDataReceived += (_, e) => { if (e.Data != null) Program.Err(e.Data); };
         p.BeginOutputReadLine(); p.BeginErrorReadLine();
@@ -581,7 +599,23 @@ addEventListener('DOMContentLoaded', () => {
             catch { }
             return;
         }
-        if (line.StartsWith("✓")) { answer = line; Deliver(line.Length > 2 ? line[2..] : ""); }
+        if (line.StartsWith("↺ "))   // "↺ {t, mode}": new text for the selection (replace · delete) or a draft for the cursor (draft · insert)
+        {
+            try
+            {
+                using var d = JsonDocument.Parse(line[2..]);
+                var draft = d.RootElement.GetProperty("t").GetString() ?? "";
+                var m = d.RootElement.TryGetProperty("mode", out var md) ? md.GetString() : "replace";
+                var now = m == "insert";   // the user asked to put it in: no Insert click needed
+                replacement = draft; mode = now ? "draft" : m; pinned = true;
+                var target = selection != null && (selection.Editable || selection.Pastable) && (mode != "draft" || selection.Caret);
+                js("rewrite", new object[] { draft, mode, target });
+                if (mode == "draft" && target && (now || Prefs.Str("draftInsert") == "auto")) ApplyReplacement();
+            }
+            catch { }
+            return;
+        }
+        if (line.StartsWith("✓")) { answer = line; Deliver(replacement is { Length: > 0 } r ? r : line.Length > 2 ? line[2..] : ""); }
         if (line.StartsWith("! ")) js("msg", line[2..]);
         else js("line", line);
     }
@@ -593,6 +627,8 @@ addEventListener('DOMContentLoaded', () => {
         busy = true; answer = "";
         if (!speculative) js("think");
         if (warm is { } w0 && w0.p.HasExited) warm = null;
+        if (warm != null && warmSel != SelKey) Unwarm();   // started before the selection changed
+        if (!speculative) lastAsk = t;
         var w = warm ?? Spawn();
         if (w == null) { busy = false; js("msg", "Could not start atticus.py. Run setup again."); Hide(3); return; }
         warm = null; proc = w.Value.p; commit = w.Value.commit;
@@ -603,6 +639,42 @@ addEventListener('DOMContentLoaded', () => {
         }
         try { w.Value.input.Write(Hooks.Mine + "\t" + t.Replace("\n", " ") + "\n"); w.Value.input.Close(); }
         catch { Cancel(); js("msg", "The request worker stopped. Please try again."); }
+    }
+
+    // ---- selected text ----
+    Action Selected;   // waiting for the selection (typing mode opens the box after it)
+    string SelKey => Prefs.Bool("selection") && selection != null ? selection.Caret ? "\u0001" : selection.Text : "";   // \u0001: no highlight, the cursor sits in a text box
+    void ShowSelected() { if (selection is { Caret: false } s) js("selected", s.Text); }
+
+    void CaptureSelection()   // at the shortcut, before Atticus can take the focus
+    {
+        var id = ++selectionID;
+        selection = null; Selected = null; selectionPending = Prefs.Bool("selection");
+        if (!selectionPending) return;
+        TextSelection.CaptureAsync(Native.GetForegroundWindow()).ContinueWith(t => BeginInvoke(() =>
+        {
+            if (selectionID != id) return;   // cancelled, or a newer press
+            selectionPending = false; selection = Prefs.Bool("selection") ? t.Result : null;
+            if (listening) ShowSelected();   // typing: Typed shows it with the request
+            if (warm != null && warmSel != SelKey) Unwarm();
+            if (warm == null && listening) warm = Spawn();
+            var then = Selected; Selected = null; then?.Invoke();
+        }));
+    }
+
+    // Replace / Delete / Insert: the text goes to the saved selection, or for a draft to the saved cursor.
+    async void ApplyReplacement()
+    {
+        if (replacement is not { } draft || replacing) return;
+        if (!Prefs.Bool("selection") || selection is not { } sel || (mode == "draft" && !sel.Caret)) { js("replaced", false); return; }
+        replacing = true; var id = selectionID;
+        bool ok;
+        try { ok = await sel.Apply(mode == "delete" ? "" : draft, () => selectionID == id && replacing && Prefs.Bool("selection") && !Prefs.Bool("paused"), Handle); }
+        catch { ok = false; }
+        if (selectionID != id) return;
+        replacing = false;
+        if (ok) { replacement = null; selection = null; }
+        js("replaced", ok);
     }
 
     void Deliver(string a)   // Settings: read answers aloud, copy them
