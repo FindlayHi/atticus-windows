@@ -1224,7 +1224,7 @@ def plan():
     """Can Atticus think? Claude Code must be installed and signed in to a paid Claude plan (or an API key).
     -> {'ok': bool, 'need': '' | 'install' | 'login' | 'upgrade', 'text': one line for the user}"""
     try:
-        s = json.loads(subprocess.run(['claude', 'auth', 'status'], capture_output=True, text=True, timeout=20).stdout)
+        s = json.loads(subprocess.run([shutil.which('claude') or 'claude', 'auth', 'status'], capture_output=True, text=True, timeout=20).stdout)
     except FileNotFoundError:
         return {'ok': False, 'need': 'install', 'text': 'Claude Code is not installed.'}
     except (ValueError, subprocess.TimeoutExpired):

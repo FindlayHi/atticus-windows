@@ -253,6 +253,16 @@ atticus.main()
             finally:
                 signal.signal(signal.SIGTERM, previous_handler)
 
+    def test_plan_finds_npm_claude_cmd(self):
+        # npm installs claude.cmd, which subprocess can't find by the bare name 'claude'
+        with tempfile.TemporaryDirectory() as root:
+            script = Path(root) / 'claude.py'
+            script.write_text(f'print(\'{json.dumps({"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "pro"})}\')\n')
+            fake = Path(root) / 'claude.cmd'
+            fake.write_text(f'@"{sys.executable}" "{script}"\r\n')
+            with patch.object(atticus.shutil, 'which', return_value=str(fake)):
+                self.assertEqual(atticus.plan(), {'ok': True, 'need': '', 'text': 'Using your Claude Pro plan.'})
+
 
 class WatchAndBudgetTests(unittest.TestCase):
     def setUp(self):
